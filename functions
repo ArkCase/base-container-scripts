@@ -498,7 +498,7 @@ file_error()
 		6 ) __MSG="The file [${__FILE}] is not executable" ;;
 		* ) __MSG="Unknown error code [${__CODE}] when examining file [${__FILE}]" ;;
 	esac
-	[ -n "${__MSG}" ] && err "${__MSG}"
+	[ -n "${__MSG}" ] && echo -e "${__MSG}"
 }
 
 #
@@ -506,16 +506,19 @@ file_error()
 #
 # Exit the current script (as when calling fail), but
 # render an error message corresponding to the exit code
-# of a function in the is_file family
+# of a function in the is_file family. If the exit code
+# is 0, then it will simply return 0 and do nothing
 #
 fail_file()
 {
 	local __FILE="${1}"
 	local __CODE="${2}"
-	local __MSG="$(file_error "${__FILE}" "${__CODE}")"
 
-	echo -e "${__MSG}"
-	exit ${EXIT_CODE:-1}
+	# Don't fail if the exit code is 0
+	[ ${__CODE} -eq 0 ] && return 0
+
+	local __MSG="$(file_error "${__FILE}" "${__CODE}")"
+	fail "${__MSG}"
 }
 
 __require_file()

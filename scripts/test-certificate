@@ -19,7 +19,7 @@ require_file_readable "${SSL_ROOT}"
 # Is the certificate properly signed?
 CAT=( "${SSL_ROOT}" )
 is_file_readable "${SSL_INT}" && CAT=( "${SSL_INT}" "${CAT[@]}" )
-OUT="$(openssl verify -CAfile <(cat "${CAT[@]}") "${SSL_CERTIFICATE}" 2>&1)" || fail "OpenSSL verification failed (rc=${?}): ${OUT}"
+OUT="$(openssl verify -no-CAstore -no-CApath -CAfile <(cat "${CAT[@]}") "${SSL_CERTIFICATE}" 2>&1)" || fail "OpenSSL verification failed (rc=${?}): ${OUT}"
 
 # Are the secure key and the plaintext key the same?
 A="$(openssl rsa -noout -modulus -in "${SSL_PRIVATE_KEY_AES}" -passin file:"${SSL_PASSWORD_FILE}" 2>&1)" || fail "Failed to get the modulus from the encrypted key at [${SSL_PRIVATE_KEY_AES}] (rc=${?}): ${A}"

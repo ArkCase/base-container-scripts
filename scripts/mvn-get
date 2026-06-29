@@ -44,24 +44,32 @@ download()
 	done
 }
 
-decrypt()
+openssl_decrypt()
 {
-	local VALUE="${1}"
+	local VAR_NAME="${1}"
 	local REQUIRED="$(to_boolean "${2:-"false"}")"
 
-	if "${REQUIRED}" ; then
+	if as_boolean "${REQUIRED}" ; then
 		[ -v MVN_GET_ENCRYPTION_KEY ] || fail "No MVN_GET_ENCRYPTION_KEY value is set, cannot continue"
 		[ -n "${MVN_GET_ENCRYPTION_KEY}" ] || fail "The MVN_GET_ENCRYPTION_KEY value is empty, cannot continue"
+		[ -v "${VAR_NAME}" ] || fail "No variable named [${VAR_NAME}] is defined"
+	fi
+
+	local VALUE=""
+	if [ -v "${VAR_NAME}" ] ; then
+		VALUE="${!VAR_NAME}" || fail "Failed to read the value from [${VAR_NAME}]"
 	fi
 
 	[ -v MVN_GET_ENCRYPTION_KEY ] || local MVN_GET_ENCRYPTION_KEY=""
 	if [ -n "${MVN_GET_ENCRYPTION_KEY}" ] ; then
-		local RC=0
-		openssl aes-256-cbc \
-			-a -A -salt -iter 5 -d \
-			-kfile <(echo -n "${MVN_GET_ENCRYPTION_KEY}") 2>/dev/null < <(echo -n "${VALUE}") || RC=${?}
-		[ ${RC} -eq 0 ] && return 0
-		"${REQUIRED}" && fail "Failed to decrypt the value (rc=${RC})"
+		local OUT=""
+		if OUT="$(echo -n "${VALUE}" | decrypt MVN_GET_ENCRYPTION_KEY "${VAR_NAME}" 2>&1)" ; then
+			echo -n "${OUT}"
+			return 0
+		else
+			local RC=${?}
+			"${REQUIRED}" && fail "Failed to decrypt the value from [${VAR_NAME}] (rc=${RC}):\n${OUT}"
+		fi
 	fi
 
 	# Nothing to decrypt with, or decryption failed but wasn't required
@@ -138,8 +146,8 @@ if [ -v MVN_GET_USERNAME ] && [ -v MVN_GET_PASSWORD ] ; then
 	# If we need to decrypt values, now is the time
 	if "${NEED_DECRYPT}" ; then
 		# We only do this if it hasn't already been done by MVN_CRYPT, above ...
-		MVN_GET_USERNAME="$(decrypt "${MVN_GET_USERNAME}")" || fail "Failed to decrypt the value in MVN_GET_USERNAME"
-		MVN_GET_PASSWORD="$(decrypt "${MVN_GET_PASSWORD}" "true")" || fail "Failed to decrypt the value in MVN_GET_PASSWORD"
+		MVN_GET_USERNAME="$(openssl_decrypt MVN_GET_USERNAME)" || fail "Failed to decrypt the value in MVN_GET_USERNAME"
+		MVN_GET_PASSWORD="$(openssl_decrypt MVN_GET_PASSWORD "true")" || fail "Failed to decrypt the value in MVN_GET_PASSWORD"
 	fi
 
 	# Join everything together into happy matrimony

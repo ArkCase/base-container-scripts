@@ -8,16 +8,23 @@ ${DEBUG} && set -x
 
 KEY_VAR="ENCRYPTION_KEY"
 if [ ${#} -ge 1 ] ; then
+	export V="${1}"
+	( echo "${!V}" ) &>/dev/null || fail "Invalid encryption key variable name [${V}]" 1>&2
+	unset V
 	KEY_VAR="${1}"
-	is_valid_envvar "${KEY_VAR}" || fail "Invalid variable name [${KEY_VAR}]" 1>&2
 fi
+
+[ ${#} -ge 2 ] && TARGET_VAR="${2}" || TARGET_VAR=""
+[ -n "${TARGET_VAR}" ] || TARGET_VAR="ENCRYPTED_VALUE"
 
 set_or_default "${KEY_VAR}"
 if [ -n "${!KEY_VAR}" ] ; then
-	# Decrypt the value
-	exec openssl aes-256-cbc \
-		-a -A -salt -iter 5 -d \
-		-kfile <(echo -n "${!KEY_VAR}") 2>/dev/null
+        # Generate the key and salt
+	read SALT REST < <(echo "${TARGET_VAR}" | sha256sum)
+        KEY="$(openssl kdf -keylen 32 -kdfopt digest:SHA256 -kdfopt pass:"${!KEY_VAR}" -kdfopt salt:"${SALT:0:32}" -kdfopt iter:10000 PBKDF2)"
+
+        # Encrypt the value
+        exec openssl enc -aes-256-cbc -a -A -K "${KEY//:/}" -iv "${SALT:32:48}" -d
 else
 	# Don't decrypt anything ...
 	exec cat

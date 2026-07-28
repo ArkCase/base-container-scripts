@@ -9,6 +9,9 @@ ARG BUILDER_IMAGE="golang"
 ARG BUILDER_VER="${GO}-alpine"
 ARG BUILDER_IMG="${BUILDER_IMAGE}:${BUILDER_VER}"
 
+ARG GOTEMPLATE_VER="5.2.0"
+ARG GOTEMPLATE_SRC="https://github.com/hairyhenderson/gomplate/releases/download/v${GOTEMPLATE_VER}/gomplate_${OS}-${ARCH}"
+
 FROM "${BUILDER_IMG}" AS gucci
 
 ARG GO
@@ -33,7 +36,13 @@ RUN mkdir -p "${SRCPATH}" && \
 
 FROM scratch
 
+ARG GOTEMPLATE_SRC
+
 COPY --chown=root:root --chmod=0755 functions /.functions
 COPY --chown=root:root --chmod=0755 entrypoint /
 COPY --chown=root:root --chmod=0755 scripts/ /usr/local/bin/
 COPY --chown=root:root --chmod=0755 --from=gucci "/gucci" "/usr/local/bin/gucci"
+
+# Use this instead of Gucci when the time is right. It's better maintained
+# and has many more features
+# ADD --chown=root:root --chmod=0755 "${GOTEMPLATE_SRC}" "/usr/local/bin/gotemplate"

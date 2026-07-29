@@ -2,6 +2,8 @@ ARG FIPS=""
 ARG PRIVATE_REGISTRY
 ARG VER="1.0.0"
 ARG OS="linux"
+ARG GOOS="linux"
+ARG GOARCH="amd64"
 ARG PKG="base-scripts"
 
 ARG GO="1.26"
@@ -10,7 +12,7 @@ ARG BUILDER_VER="${GO}-alpine"
 ARG BUILDER_IMG="${BUILDER_IMAGE}:${BUILDER_VER}"
 
 ARG GOTEMPLATE_VER="5.2.0"
-ARG GOTEMPLATE_SRC="https://github.com/hairyhenderson/gomplate/releases/download/v${GOTEMPLATE_VER}/gomplate_${OS}-${ARCH}"
+ARG GOTEMPLATE_SRC="https://github.com/hairyhenderson/gomplate/releases/download/v${GOTEMPLATE_VER}/gomplate_${GOOS}-${GOARCH}"
 
 FROM "${BUILDER_IMG}" AS gucci
 
@@ -23,8 +25,6 @@ RUN apk --no-cache add git
 ENV SRCPATH="/build/gucci"
 ENV GO111MODULE="on"
 ENV CGO_ENABLED="0"
-ENV GOOS="linux"
-ENV GOARCH="amd64"
 RUN mkdir -p "${SRCPATH}" && \
     cd "${SRCPATH}" && \
     git clone "${GUCCI_REPO}" "." --branch="v${GUCCI_VER}" && \

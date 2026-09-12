@@ -4,5 +4,8 @@ import yaml
 import json
 import sys
 
-json_object = json.load(sys.stdin)
-yaml.dump(json_object, sys.stdout)
+try:
+	json_object = json.load(sys.stdin)
+	yaml.dump(json_object, sys.stdout)
+except KeyboardInterrupt:
+	sys.exit(1)

@@ -131,11 +131,12 @@ if [ -v MVN_GET_SERVER_ID ] ; then
 	# We have a server ID whose username/password combo we wish to consume
 	[ -n "${MVN_GET_SERVER_ID}" ] || fail "The value in MVN_GET_SERVER_ID may not be the empty string"
 	require_exe mvn-crypt
-	MVN_GET_USERNAME="$(mvn-crypt --quiet server decrypt "${MVN_GET_SERVER_ID}" username)"
+	MVN_GET_USERNAME="$(mvn-crypt --quiet server decrypt "${MVN_GET_SERVER_ID}" username 2>&1)" || fail "Failed to decrypt the username for the server [${MVN_GET_SERVER_ID}] (rc=${?}): ${MVN_GET_USERNAME}"
 	[ -n "${MVN_GET_USERNAME}" ] || fail "The username for server [${MVN_GET_SERVER_ID}] is empty or nonexistent"
-	MVN_GET_PASSWORD="$(mvn-crypt --quiet server decrypt "${MVN_GET_SERVER_ID}" password)"
+	MVN_GET_PASSWORD="$(mvn-crypt --quiet server decrypt "${MVN_GET_SERVER_ID}" password)" || fail "Failed to decrypt the password for the server [${MVN_GET_SERVER_ID}] (rc=${?}): ${MVN_GET_PASSWORD}"
 	[ -n "${MVN_GET_PASSWORD}" ] || fail "The password for server [${MVN_GET_SERVER_ID}] is empty or nonexistent"
 	NEED_DECRYPT="false"
+	ok "Decrypted the username and password for the server ${MVN_GET_SERVER_ID} from Maven's settings"
 fi
 
 AUTH=""
@@ -147,7 +148,9 @@ if [ -v MVN_GET_USERNAME ] && [ -v MVN_GET_PASSWORD ] ; then
 	if "${NEED_DECRYPT}" ; then
 		# We only do this if it hasn't already been done by MVN_CRYPT, above ...
 		MVN_GET_USERNAME="$(openssl_decrypt MVN_GET_USERNAME 2>&1)" || fail "Failed to decrypt the value in MVN_GET_USERNAME:\n${MVN_GET_USERNAME}"
+		ok "Decrypted the username with OpenSSL"
 		MVN_GET_PASSWORD="$(openssl_decrypt MVN_GET_PASSWORD "true" 2>&1)" || fail "Failed to decrypt the value in MVN_GET_PASSWORD\n${MVN_GET_PASSWORD}"
+		ok "Decrypted the password with OpenSSL"
 	fi
 
 	# Join everything together into happy matrimony
@@ -163,6 +166,11 @@ doing "Downloading:"
 say "\tArtifact:    [${ARTIFACT}]"
 say "\tRepository:  [${REPO_URL}]"
 say "\tDestination: [${DEST}]"
+if [ -n "${MVN_GET_USERNAME}" ] && [ -n "${MVN_GET_PASSWORD}" ] ; then
+	USUM="$(echo -n "${MVN_GET_USERNAME}" | sha256sum | awk '{ print $1 }')"
+	PSUM="$(echo -n "${MVN_GET_PASSWORD}" | sha256sum | awk '{ print $1 }')"
+	say "\tAuthentication: [${USUM}:${PSUM}]"
+fi
 
 export WORKDIR="$(mktemp -d)"
 trap cleanup EXIT

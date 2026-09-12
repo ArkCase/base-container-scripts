@@ -139,7 +139,7 @@ if [ -v MVN_GET_SERVER_ID ] ; then
 	ok "Decrypted the username and password for the server ${MVN_GET_SERVER_ID} from Maven's settings"
 fi
 
-AUTH=""
+export AUTH=""
 if [ -v MVN_GET_USERNAME ] && [ -v MVN_GET_PASSWORD ] ; then
 	[ -n "${MVN_GET_USERNAME}" ] || fail "The value in MVN_GET_USERNAME may not be the empty string"
 	[ -n "${MVN_GET_PASSWORD}" ] || fail "The value in MVN_GET_PASSWORD may not be the empty string"
@@ -166,10 +166,14 @@ doing "Downloading:"
 say "\tArtifact:    [${ARTIFACT}]"
 say "\tRepository:  [${REPO_URL}]"
 say "\tDestination: [${DEST}]"
-if [ -n "${MVN_GET_USERNAME}" ] && [ -n "${MVN_GET_PASSWORD}" ] ; then
-	USUM="$(echo -n "${MVN_GET_USERNAME}" | sha256sum | awk '{ print $1 }')"
-	PSUM="$(echo -n "${MVN_GET_PASSWORD}" | sha256sum | awk '{ print $1 }')"
-	say "\tAuthentication: [${USUM}:${PSUM}]"
+if [ -n "${AUTH}" ] ; then
+	USUM="$(echo -n "${AUTH}" | sed -e 's;:.*$;;g' | sha256sum | awk '{ print $1 }')"
+	PSUM="$(echo -n "${AUTH}" | sed -e 's;^[^:]\+:;;g' | sha256sum | awk '{ print $1 }')"
+	say "\tAuthentication (sha256 sums):"
+	say "\t🔒 Username: [${USUM}]"
+	say "\t🔑 Password: [${PSUM}]"
+else
+	say "\tNo authentication will be used"
 fi
 
 export WORKDIR="$(mktemp -d)"

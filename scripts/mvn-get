@@ -146,8 +146,8 @@ if [ -v MVN_GET_USERNAME ] && [ -v MVN_GET_PASSWORD ] ; then
 	# If we need to decrypt values, now is the time
 	if "${NEED_DECRYPT}" ; then
 		# We only do this if it hasn't already been done by MVN_CRYPT, above ...
-		MVN_GET_USERNAME="$(openssl_decrypt MVN_GET_USERNAME)" || fail "Failed to decrypt the value in MVN_GET_USERNAME"
-		MVN_GET_PASSWORD="$(openssl_decrypt MVN_GET_PASSWORD "true")" || fail "Failed to decrypt the value in MVN_GET_PASSWORD"
+		MVN_GET_USERNAME="$(openssl_decrypt MVN_GET_USERNAME 2>&1)" || fail "Failed to decrypt the value in MVN_GET_USERNAME:\n${MVN_GET_USERNAME}"
+		MVN_GET_PASSWORD="$(openssl_decrypt MVN_GET_PASSWORD "true" 2>&1)" || fail "Failed to decrypt the value in MVN_GET_PASSWORD\n${MVN_GET_PASSWORD}"
 	fi
 
 	# Join everything together into happy matrimony

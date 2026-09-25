@@ -3,34 +3,63 @@
 set -euo pipefail
 . /.functions
 
+set_or_default SSL_DIR "/.ssl"
+
+require_exe openssl sha256sum
+
 require_dir_readable "${SSL_DIR}"
 require_file_readable "${SSL_DIR}/.env"
+
+SSL_ENV="${SSL_DIR}/.env"
 
 #
 # Init all the SSL-related stuff
 #
-wait_ssl
+source "${SSL_ENV}" || fail "Failed to load the SSL environment from [${SSL_ENV}]"
 
-require_file_readable "${SSL_CERTIFICATE}"
-require_file_readable "${SSL_PRIVATE_KEY}"
-require_file_readable "${SSL_PRIVATE_KEY_AES}"
-require_file_readable "${SSL_ROOT}"
+# Check that all the files are there
+BASE_VARS=(
+	SSL_PASSWORD_FILE
+	SSL_CERTIFICATE
+	SSL_PRIVATE_KEY
+	SSL_PRIVATE_KEY_ENCRYPTED
+	SSL_CA_ROOT
+	SSL_CA_CHAIN
+)
 
-# Is the certificate properly signed?
-CAT=( "${SSL_ROOT}" )
-is_file_readable "${SSL_INT}" && CAT=( "${SSL_INT}" "${CAT[@]}" )
-OUT="$(openssl verify -no-CAstore -no-CApath -CAfile <(cat "${CAT[@]}") "${SSL_CERTIFICATE}" 2>&1)" || fail "OpenSSL verification failed (rc=${?}): ${OUT}"
+eyes "Validating the files ..."
+for VAR in "${BASE_VARS[@]}" ; do
+	[ -v "${VAR}" ] || fail "The variable [${VAR}] is not defined!"
+	FILE="${!VAR}"
+	[ -n "${VAR}" ] || fail "The value for [${VAR}] is empty!"
+	require_file_readable "${FILE}"
+	[ -s "${FILE}" ] || fail "The file [${FILE}] is of length 0"
+done
 
-# Are the secure key and the plaintext key the same?
-A="$(openssl rsa -noout -modulus -in "${SSL_PRIVATE_KEY_AES}" -passin file:"${SSL_PASSWORD_FILE}" 2>&1)" || fail "Failed to get the modulus from the encrypted key at [${SSL_PRIVATE_KEY_AES}] (rc=${?}): ${A}"
-B="$(openssl rsa -noout -modulus -in "${SSL_PRIVATE_KEY}" 2>&1)" || fail "Failed to get the modulus from the plaintext key at [${SSL_PRIVATE_KEY}] (rc=${?}): ${B}"
-[ "${A}" == "${B}" ] || fail "Modulus mismatch between the keys at [${SSL_DIR}]: [${A}] != [${B}]"
+#
+# Verify certificate signatures!
+#
+if is_file_readable "${SSL_CA_INT}" ; then
+	OUT="$(openssl verify -no-CAstore -no-CApath -CAfile "${SSL_CA_ROOT}" "${SSL_CA_INT}" 2>&1)" || fail "The intermediate CA is not signed by the root CA (rc=${?}): ${OUT}"
+fi
+OUT="$(openssl verify -no-CAstore -no-CApath -CAfile "${SSL_CA_CHAIN}" "${SSL_CERTIFICATE}" 2>&1)" || fail "The certificate isn't signed by the CA Chain at [${SSL_CA_CHAIN}] (rc=${?}): ${OUT}"
 
+#
 # Does the private key match the certificate?
-B="$(openssl x509 -noout -modulus -in "${SSL_CERTIFICATE}" 2>&1)" || fail "Failed to get the modulus from the certificate at [${SSL_CERTIFICATE}] (rc=${?}): ${B}"
+#
+MOD_CERTIFICATE="$(openssl x509 -noout -modulus -in "${SSL_CERTIFICATE}" 2>&1)" || fail "Failed to get the modulus from the certificate at [${SSL_CERTIFICATE}] (rc=${?}): ${MOD_CERTIFICATE}"
+MOD_PRIVATE="$(openssl rsa -noout -modulus -in "${SSL_PRIVATE_KEY}" 2>&1)" || fail "Failed to get the modulus from the plaintext key at [${SSL_PRIVATE_KEY}] (rc=${?}): ${MOD_PRIVATE}"
+[ "${MOD_PRIVATE}" == "${MOD_CERTIFICATE}" ] || fail "Modulus mismatch between the private key and the certificate: [${MOD_PRIVATE}] != [${MOD_CERTIFICATE}]"
 
-[ "${A}" == "${B}" ] || fail "Modulus mismatch between the keys at [${SSL_DIR}] and the certificate: [${A}] != [${B}]"
+#
+# Are the secure key and the plaintext key the same?
+#
+DECRYPTED_KEY="$(openssl pkcs8 -in "${SSL_PRIVATE_KEY_ENCRYPTED}" -passin file:"${SSL_PASSWORD_FILE}" -nocrypt)" || fail "Failed to decrypt the AES-encrypted (PKCS#8) private key (rc=${?})"
+MOD_DECRYPTED="$(openssl rsa -noout -modulus <<< "${DECRYPTED_KEY}" 2>&1)" || fail "Failed to get the modulus from the decrypted private key from [${SSL_PRIVATE_KEY_ENCRYPTED}] (rc=${?}): ${MOD_DECRYPTED}"
+[ "${MOD_ENCRYPTED}" == "${MOD_PRIVATE}" ] || fail "Modulus mismatch between the encrypted private key and the plaintext private key: [${MOD_ENCRYPTED}] != [${MOD_PRIVATE}]"
 
+#
 # Hooray!! VERIFIED!
+#
 ok "Certificate verified!"
 exit 0

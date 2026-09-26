@@ -54,8 +54,8 @@ MOD_PRIVATE="$(openssl rsa -noout -modulus -in "${SSL_PRIVATE_KEY}" 2>&1)" || fa
 #
 # Are the secure key and the plaintext key the same?
 #
-DECRYPTED_KEY="$(openssl pkcs8 -in "${SSL_PRIVATE_KEY_ENCRYPTED}" -passin file:"${SSL_PASSWORD_FILE}" -nocrypt)" || fail "Failed to decrypt the AES-encrypted (PKCS#8) private key (rc=${?})"
-MOD_DECRYPTED="$(openssl rsa -noout -modulus <<< "${DECRYPTED_KEY}" 2>&1)" || fail "Failed to get the modulus from the decrypted private key from [${SSL_PRIVATE_KEY_ENCRYPTED}] (rc=${?}): ${MOD_DECRYPTED}"
+DECRYPTED_KEY="$(openssl pkcs8 -in "${SSL_PRIVATE_KEY_ENCRYPTED}" -passin file:"${SSL_PASSWORD_FILE}")" || fail "Failed to decrypt the AES-encrypted (PKCS#8) private key (rc=${?})"
+MOD_ENCRYPTED="$(openssl rsa -noout -modulus <<< "${DECRYPTED_KEY}" 2>&1)" || fail "Failed to get the modulus from the decrypted private key from [${SSL_PRIVATE_KEY_ENCRYPTED}] (rc=${?}): ${MOD_ENCRYPTED}"
 [ "${MOD_ENCRYPTED}" == "${MOD_PRIVATE}" ] || fail "Modulus mismatch between the encrypted private key and the plaintext private key: [${MOD_ENCRYPTED}] != [${MOD_PRIVATE}]"
 
 #

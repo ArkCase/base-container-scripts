@@ -1,0 +1,38 @@
+#!/bin/bash
+set -euo pipefail
+. /.functions
+
+# Enable debugging ...
+set_as_boolean DEBUG
+${DEBUG} && set -x
+
+KEY_VAR="ENCRYPTION_KEY"
+if [ ${#} -ge 1 ] ; then
+	export V="${1}"
+	( echo "${!V}" ) &>/dev/null || fail "Invalid encryption key variable name [${V}]" 1>&2
+	unset V
+	KEY_VAR="${1}"
+fi
+
+[ ${#} -ge 2 ] && TARGET_VAR="${2}" || TARGET_VAR=""
+[ -n "${TARGET_VAR}" ] || TARGET_VAR="ENCRYPTED_VALUE"
+
+set_or_default "${KEY_VAR}"
+if [ -n "${!KEY_VAR}" ] ; then
+	# Generate the key and salt
+	read SALT REST < <(echo "${TARGET_VAR}" | sha256sum)
+	KEY="$(openssl kdf -keylen 32 -kdfopt digest:SHA256 -kdfopt pass:"${!KEY_VAR}" -kdfopt hexsalt:"${SALT:0:32}" -kdfopt iter:10000 PBKDF2)"
+
+	set_or_default AES_CRYPT_MODE "encrypt"
+	case "${AES_CRYPT_MODE}" in
+		encrypt ) FLAG="-e" ;;
+		decrypt ) FLAG="-d" ;;
+		* ) fail "Invalid AES_CRYPT_MODE value [${AES_CRYPT_MODE}]" ;;
+	esac
+
+	# Process the value
+	exec openssl enc -aes-256-cbc -a -A -K "${KEY//:/}" -iv "${SALT:32:32}" "${FLAG}"
+else
+	# Don't process anything ...
+	exec cat
+fi

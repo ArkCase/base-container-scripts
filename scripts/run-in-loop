@@ -3,16 +3,70 @@
 set -euo pipefail
 . /.functions
 
-handle_term()
+# The PID of the process we're currently waiting on (the command, or the sleep)
+CHILD_PID=""
+
+# The signal that caused us to stop, if any
+TERMINATED_BY=""
+
+#
+# Forward the received signal to the running child (and its entire process
+# group, so grandchildren get it too), and flag the loop for termination.
+# The signal is NOT acted upon here beyond forwarding it: the main flow will
+# notice that wait was interrupted, wait for the child to actually exit, and
+# then exit cleanly.
+#
+handle_signal()
 {
-	err "Process Terminated"
-	exit 1
+	local SIG="${1}"
+	[ -n "${TERMINATED_BY}" ] || TERMINATED_BY="${SIG}"
+	err "Received SIG${SIG}"
+	[ -n "${CHILD_PID}" ] || return 0
+	eyes "Forwarding SIG${SIG} to PID ${CHILD_PID}"
+	kill -s "${SIG}" -- "-${CHILD_PID}" &>/dev/null || kill -s "${SIG}" -- "${CHILD_PID}" &>/dev/null || true
+}
+
+#
+# usage: run_child command [args...]
+#
+# Run the given command in the background and wait for it to exit, while
+# allowing the signal traps to fire while it runs. Its exit status is
+# returned. If a signal is received, it's forwarded to the child, and we
+# keep waiting until the child actually exits.
+#
+run_child()
+{
+	# Explicitly re-attach stdin, since background jobs get /dev/null otherwise
+	"${@}" <&0 &
+	CHILD_PID="${!}"
+
+	local RC=0
+	while true ; do
+		# (stderr is silenced to suppress the job control status notices)
+		wait "${CHILD_PID}" 2>/dev/null && RC=0 || RC=${?}
+
+		# If wait was interrupted by a trapped signal, the child is still
+		# alive (or not yet reaped), so we wait on it again
+		kill -0 "${CHILD_PID}" &>/dev/null || break
+	done
+	CHILD_PID=""
+	return ${RC}
+}
+
+terminate_if_signaled()
+{
+	[ -n "${TERMINATED_BY}" ] || return 0
+	local ITERATION="${1}"
+	err "Process Terminated by SIG${TERMINATED_BY} during iteration # ${ITERATION}"
+	# Mimic the conventional exit status for death-by-signal
+	exit $(( 128 + $(kill -l "${TERMINATED_BY}") ))
 }
 
 terminate_if_requested()
 {
 	local FILE="${1}"
 	local ITERATION="${2}"
+	terminate_if_signaled "${ITERATION}"
 	is_file "${FILE}" && quit "The termination flag [${FILE}] was detected, stopping after iteration # ${ITERATION}"
 	return 0
 }
@@ -33,7 +87,15 @@ RUN_LOOP_WAIT="$(secs_to_timestr "${RUN_LOOP_WAIT_SECS}")"
 
 set_or_default LOOP_TERMINATION_FILE "/.terminate"
 
-trap handle_term TERM
+# Enable job control so each child runs in its own process group (so we can
+# signal the whole group), and so that background jobs don't have SIGINT and
+# SIGQUIT ignored (which is what non-interactive bash does without it)
+set -m
+
+# SIGKILL and SIGSTOP can't be trapped, so they can't be forwarded
+for SIG in TERM INT QUIT HUP ; do
+	trap "handle_signal ${SIG}" "${SIG}"
+done
 
 eyes "The command will run in an endless loop with a ${RUN_LOOP_WAIT} wait between iterations"
 ITERATION=0
@@ -42,10 +104,11 @@ while true ; do
 
 	(( ++ITERATION ))
 	running "Iteration # ${ITERATION}: ${@@Q}"
-	"${@}" && ok "Exited with status code 0" || err "Exited with status code ${?}"
+	run_child "${@}" && ok "Exited with status code 0" || err "Exited with status code ${?}"
+	terminate_if_signaled "${ITERATION}"
 	[ ${RUN_LOOP_WAIT_SECS} -gt 0 ] || continue
 
 	terminate_if_requested "${LOOP_TERMINATION_FILE}" "${ITERATION}"
 	sleeping "Waiting ${RUN_LOOP_WAIT} before the next iteration"
-	sleep ${RUN_LOOP_WAIT_SECS} || fail "Sleep interrupted"
+	run_child sleep ${RUN_LOOP_WAIT_SECS} || terminate_if_signaled "${ITERATION}" || fail "Sleep interrupted"
 done

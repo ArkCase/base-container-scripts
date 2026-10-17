@@ -85,7 +85,7 @@ RUN_LOOP_WAIT_SECS="$(timestr_to_secs "${RUN_LOOP_WAIT}")" || fail "The value [$
 # Convert it back, just to make sure we have a timestring here
 RUN_LOOP_WAIT="$(secs_to_timestr "${RUN_LOOP_WAIT_SECS}")"
 
-set_or_default LOOP_TERMINATION_FILE "/.terminate"
+set_or_default LOOP_TERMINATION_FILE "/tmp/.terminate"
 
 # Enable job control so each child runs in its own process group (so we can
 # signal the whole group), and so that background jobs don't have SIGINT and

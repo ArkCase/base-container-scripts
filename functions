@@ -75,6 +75,8 @@ say()
 # Set Colors
 #
 
+[ -n "${TERM:-}" ] || export TERM="${DEFAULT_TERM:-"linux"}"
+
 __bold__="$(tput bold)"
 __underline__="$(tput sgr 0 1)"
 __reset__="$(tput sgr0)"

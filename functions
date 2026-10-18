@@ -51,14 +51,24 @@ __say__()
 	echo -e "$(timestamp) [${$}${SUFFIX}]: ${MSG}"
 }
 
-say()
+to_stdout()
 {
 	__say__ "${@}"
 }
 
-say_err()
+to_stderr()
 {
 	__say__ "${@}" 1>&2
+}
+
+#
+# If you want to redirect output to STDERR, just rewrite
+# this function in your script such that it calls 'to_stderr'
+# instead of 'to_stdout'
+#
+say()
+{
+	to_stdout "${@}"
 }
 
 #

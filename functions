@@ -30,14 +30,35 @@ functions_loaded()
 #
 timestamp()
 {
-	/usr/bin/date -Ins -u
+	command date -u '+%Y-%m-%dT%H:%M:%S.%3NZ'
 }
 
-__formatted()
+#
+# usage: say [args ...]
+#
+# Output a message to stdout, preceded by a timestamp
+#
+__say__()
 {
+	local FMT="%s"
+	if [ ${#} -gt 1 ] ; then
+		FMT="${1}"
+		shift
+	fi
 	local SUFFIX=""
+	local MSG="$(printf "${FMT}" "${*}")"
 	[ -v PARALLEL_ID ] && SUFFIX="|${!PARALLEL_ID}"
-	echo -e "$(timestamp) [${$}${SUFFIX}]: $(printf "${@}")"
+	echo -e "$(timestamp) [${$}${SUFFIX}]: ${MSG}"
+}
+
+say()
+{
+	__say__ "${@}"
+}
+
+say_err()
+{
+	__say__ "${@}" 1>&2
 }
 
 #
@@ -59,47 +80,47 @@ __blue__="$(tput setaf 25)"
 #
 underline()
 {
-	__formatted "${__underline__}${__bold__}%s${__reset__}\n" "${*}"
+	say "${__underline__}${__bold__}%s${__reset__}\n" "${*}"
 }
 
 h1()
 {
-	__formatted "\n${__underline__}${__bold__}${__blue__}%s${__reset__}\n" "${*^^}"
+	say "\n${__underline__}${__bold__}${__blue__}%s${__reset__}\n" "${*^^}"
 }
 
 h2()
 {
-	__formatted "\n${__underline__}${__bold__}${__white__}%s${__reset__}\n" "${*}"
+	say "\n${__underline__}${__bold__}${__white__}%s${__reset__}\n" "${*}"
 }
 
 debug()
 {
-	__formatted "${__white__}🪲 %s${__reset__}\n" "${*}"
+	say "${__white__}🪲 %s${__reset__}\n" "${*}"
 }
 
 ok()
 {
-	__formatted "${__green__}✅ %s${__reset__}\n" "${*}"
+	say "${__green__}✅ %s${__reset__}\n" "${*}"
 }
 
 err()
 {
-	__formatted "${__red__}❌ %s${__reset__}\n" "${*}"
+	say "${__red__}❌ %s${__reset__}\n" "${*}"
 }
 
 warn()
 {
-	__formatted "${__tan__}⚠️  %s${__reset__}\n" "${*}"
+	say "${__tan__}⚠️  %s${__reset__}\n" "${*}"
 }
 
 bold()
 {
-	__formatted "${__bold__}%s${__reset__}\n" "${*}"
+	say "${__bold__}%s${__reset__}\n" "${*}"
 }
 
 note()
 {
-	__formatted "\n${__underline__}${__bold__}${__blue__}📝 %s${__reset__}\n" "${*}"
+	say "\n${__underline__}${__bold__}${__blue__}📝 %s${__reset__}\n" "${*}"
 }
 
 #
@@ -129,16 +150,6 @@ running()
 eyes()
 {
 	say "👀 ${@}"
-}
-
-#
-# usage: say [args ...]
-#
-# Output a message to stdout, preceded by a timestamp
-#
-say()
-{
-	__formatted "%s" "${*}"
 }
 
 #

@@ -33,16 +33,73 @@ timestamp()
 	/usr/bin/date -Ins -u
 }
 
-#
-# usage: say [args ...]
-#
-# Output a message to stdout, preceded by a timestamp
-#
-say()
+__formatted()
 {
 	local SUFFIX=""
 	[ -v PARALLEL_ID ] && SUFFIX="|${!PARALLEL_ID}"
-	echo -e "$(timestamp) [${$}${SUFFIX}]: ${@}"
+	echo -e "$(timestamp) [${$}${SUFFIX}]: $(printf "${@}")"
+}
+
+#
+# Set Colors
+#
+
+__bold__="$(tput bold)"
+__underline__="$(tput sgr 0 1)"
+__reset__="$(tput sgr0)"
+
+__red__="$(tput setaf 1)"
+__green__="$(tput setaf 76)"
+__white__="$(tput setaf 7)"
+__tan__="$(tput setaf 202)"
+__blue__="$(tput setaf 25)"
+
+#
+# Headers and Logging
+#
+underline()
+{
+	__formatted "${__underline__}${__bold__}%s${__reset__}\n" "${*}"
+}
+
+h1()
+{
+	__formatted "\n${__underline__}${__bold__}${__blue__}%s${__reset__}\n" "${*^^}"
+}
+
+h2()
+{
+	__formatted "\n${__underline__}${__bold__}${__white__}%s${__reset__}\n" "${*}"
+}
+
+debug()
+{
+	__formatted "${__white__}🪲 %s${__reset__}\n" "${*}"
+}
+
+ok()
+{
+	__formatted "${__green__}✅ %s${__reset__}\n" "${*}"
+}
+
+err()
+{
+	__formatted "${__red__}❌ %s${__reset__}\n" "${*}"
+}
+
+warn()
+{
+	__formatted "${__tan__}⚠️  %s${__reset__}\n" "${*}"
+}
+
+bold()
+{
+	__formatted "${__bold__}%s${__reset__}\n" "${*}"
+}
+
+note()
+{
+	__formatted "\n${__underline__}${__bold__}${__blue__}📝 %s${__reset__}\n" "${*}"
 }
 
 #
@@ -52,21 +109,6 @@ say()
 doing()
 {
 	say "👉 ${@}"
-}
-
-ok()
-{
-	say "✅ ${@}"
-}
-
-warn()
-{
-	say "⚠️ ${@}"
-}
-
-err()
-{
-	say "❌ ${@}"
 }
 
 waiting()
@@ -87,6 +129,16 @@ running()
 eyes()
 {
 	say "👀 ${@}"
+}
+
+#
+# usage: say [args ...]
+#
+# Output a message to stdout, preceded by a timestamp
+#
+say()
+{
+	__formatted "%s" "${*}"
 }
 
 #

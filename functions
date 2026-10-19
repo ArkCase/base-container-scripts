@@ -1375,7 +1375,7 @@ xml_unescape()
 execute()
 {
 	[ ${#} -gt 0 ] || fail "No command given to execute"
-	running "${@@Q}"
+	running "${*@Q}"
 	exec "${@}"
 }
 
@@ -1626,7 +1626,7 @@ execute_unless()
 	#
 	# Show the command about to be executed
 	#
-	running "${@@Q}"
+	running "${*@Q}"
 	if as_boolean "${!__VAR}" ; then
 		warn "${__VAR} is set to true, Skipping the command execution"
 		return 0

@@ -71,21 +71,30 @@ say()
 	to_stdout "${@}"
 }
 
+ansi()
+{
+	printf "\033[%sm" "${1:-0}"
+}
+
+ansi_reset()
+{
+	ansi 0
+}
+
 #
 # Set Colors
 #
 
-[ -n "${TERM:-}" ] || export TERM="${DEFAULT_TERM:-"linux"}"
+__bold__="$(ansi 1)"
+__underline__="$(ansi 4)"
+__reset__="$(ansi_reset)"
 
-__bold__="$(tput bold)"
-__underline__="$(tput sgr 0 1)"
-__reset__="$(tput sgr0)"
-
-__red__="$(tput setaf 1)"
-__green__="$(tput setaf 76)"
-__white__="$(tput setaf 7)"
-__tan__="$(tput setaf 202)"
-__blue__="$(tput setaf 25)"
+__red__="$(ansi 31)"
+__green__="$(ansi 32)"
+__white__="$(ansi 37)"
+__tan__="$(ansi 33)"
+__blue__="$(ansi 34)"
+__gray__="$(ansi 90)"
 
 #
 # Headers and Logging
@@ -146,12 +155,12 @@ doing()
 
 waiting()
 {
-	say "⏳ ${@}"
+	say "⏳ ${__gray__}${@}${__reset__}"
 }
 
 sleeping()
 {
-	say "💤 ${@}"
+	say "💤 ${__gray__}${@}${__reset__}"
 }
 
 running()

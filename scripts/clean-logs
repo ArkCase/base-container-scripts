@@ -70,7 +70,8 @@ if ! as_boolean "${LOGS_DRY_RUN}" ; then
 fi
 
 doing "${DRY_RUN_MSG}Deleting all log files at [${LOGS_DIR}] older than ${LOGS_MAX_DAYS} days ..."
-CMD=( find "${LOGS_DIR}" -type f -mtime "+${LOGS_MAX_DAYS}" "${DRY_RUN_FLAGS[@]}" )
+# -H follows LOGS_DIR itself if it's a symlink (but not any symlinks within it)
+CMD=( find -H "${LOGS_DIR}" -type f -mtime "+${LOGS_MAX_DAYS}" "${DRY_RUN_FLAGS[@]}" )
 COUNT=0
 while read FILE ; do
 	if as_boolean "${LOGS_DRY_RUN}" ; then

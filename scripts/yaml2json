@@ -12,7 +12,15 @@ def json_default(o):
 	raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
 
 try:
-	yaml_object = yaml.safe_load(sys.stdin)
-	json.dump(yaml_object, sys.stdout, default=json_default)
+	documents = list(yaml.safe_load_all(sys.stdin))
+	# An empty stream is rendered as null, as an empty document is
+	if not documents:
+		documents = [ None ]
+	# A single document is rendered as-is. Multiple documents (separated by ---)
+	# are rendered one per line (JSON Lines), which jq and others can consume
+	for n, document in enumerate(documents):
+		if n > 0:
+			sys.stdout.write("\n")
+		json.dump(document, sys.stdout, default=json_default)
 except KeyboardInterrupt:
 	sys.exit(1)

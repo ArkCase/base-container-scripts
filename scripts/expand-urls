@@ -107,6 +107,9 @@ parts = {
 #
 def parse_url(name, value):
 	if name.startswith(PREFIX) and name.endswith(SUFFIX):
+		# The output is shell code, so the name must be a valid shell variable name
+		if not re.match("^[a-zA-Z_][a-zA-Z0-9_]*$", name):
+			raise ValueError("the variable name is not a valid shell variable name")
 		url = urllib.parse.urlparse(value)
 		# The port is parsed lazily, so access it to validate it
 		url.port

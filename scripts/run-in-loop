@@ -10,8 +10,7 @@ CHILD_PID=""
 TERMINATED_BY=""
 
 #
-# Forward the received signal to the running child (and its entire process
-# group, so grandchildren get it too), and flag the loop for termination.
+# Forward the received signal to the running child, and flag the loop for termination.
 # The signal is NOT acted upon here beyond forwarding it: the main flow will
 # notice that wait was interrupted, wait for the child to actually exit, and
 # then exit cleanly.
@@ -23,7 +22,7 @@ handle_signal()
 	err "Received SIG${SIG}"
 	[ -n "${CHILD_PID}" ] || return 0
 	eyes "Forwarding SIG${SIG} to PID ${CHILD_PID}"
-	kill -s "${SIG}" -- "-${CHILD_PID}" &>/dev/null || kill -s "${SIG}" -- "${CHILD_PID}" &>/dev/null || true
+	kill -s "${SIG}" -- "${CHILD_PID}" &>/dev/null || true
 }
 
 #
@@ -36,13 +35,16 @@ handle_signal()
 #
 run_child()
 {
-	# Explicitly re-attach stdin, since background jobs get /dev/null otherwise
-	"${@}" <&0 &
+	# Explicitly re-attach stdin, since background jobs get /dev/null otherwise.
+	# Background jobs also have SIGINT and SIGQUIT ignored (as job control is
+	# off), so restore their default handling so they can be forwarded. Job
+	# control isn't used because it puts the child in a background process
+	# group, so it would be stopped (and we'd spin) if it read from a terminal.
+	env --default-signal=INT,QUIT "${@}" <&0 &
 	CHILD_PID="${!}"
 
 	# If wait is interrupted by a trapped signal, the child is still
 	# alive (or not yet reaped), so we wait on it again until it's gone
-	# (stderr is silenced to suppress the job control status notices)
 	while kill -0 "${CHILD_PID}" &>/dev/null ; do
 		wait "${CHILD_PID}" 2>/dev/null || true
 	done
@@ -88,11 +90,6 @@ RUN_LOOP_WAIT_SECS="$(timestr_to_secs "${RUN_LOOP_WAIT}")" || fail "The value [$
 RUN_LOOP_WAIT="$(secs_to_timestr "${RUN_LOOP_WAIT_SECS}")"
 
 set_or_default LOOP_TERMINATION_FILE "/tmp/.terminate"
-
-# Enable job control so each child runs in its own process group (so we can
-# signal the whole group), and so that background jobs don't have SIGINT and
-# SIGQUIT ignored (which is what non-interactive bash does without it)
-set -m
 
 # SIGKILL and SIGSTOP can't be trapped, so they can't be forwarded
 for SIG in TERM INT QUIT HUP ; do

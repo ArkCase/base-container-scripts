@@ -277,6 +277,14 @@ def encryptAndDecorate(value, key):
 # Load the master password from the settings-security.xml, or return
 # None if there is no such password
 #
+#
+# Maven trims the values it reads from its settings files, so we must too
+#
+def trim(value):
+	if value is None:
+		return None
+	return value.strip()
+
 def readMasterPassword(securityFile):
 	if not securityFile:
 		return None
@@ -286,7 +294,7 @@ def readMasterPassword(securityFile):
 	master = settingsSecurity.findall("{*}master")
 	if not master:
 		return None
-	return master[0].text
+	return trim(master[0].text)
 
 def readServerValue(settingsFile, serverId, valueName):
 	if not settingsFile:
@@ -296,8 +304,8 @@ def readServerValue(settingsFile, serverId, valueName):
 	# may use any of the schema versions' namespaces, or none at all
 	settings = ET.parse(settingsFile)
 	for server in settings.iterfind("./{*}servers/{*}server"):
-		if server.findtext("{*}id") == serverId:
-			return server.findtext(f"{{*}}{valueName}")
+		if trim(server.findtext("{*}id")) == serverId:
+			return trim(server.findtext(f"{{*}}{valueName}"))
 
 	return None
 

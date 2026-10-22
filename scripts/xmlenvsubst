@@ -14,12 +14,16 @@
 # sections (where escaping isn't possible) they're inserted verbatim, so a
 # value that contains "]]>" or a CR can't be used there, and is an error.
 #
+# References to external entities, or to entities declared in an external
+# DTD, can't be resolved (external files aren't read), so they're an error.
+#
 
 import os
 import re
 import sys
 import traceback
 import xml.dom.minidom
+import xml.parsers.expat
 
 # $$ is a literal $, while $NAME and ${NAME} are replaced with the variable's value.
 # As with os.path.expandvars(), references to unset variables are left untouched.
@@ -89,6 +93,38 @@ def write_text(node, out):
 		out.append(escape_value(text) if name else escape_text(text))
 
 #
+# The DOM parser silently drops references to entities it can't resolve
+# (external ones, or those declared in an external DTD), which would change
+# the document, so check for them first
+#
+ENTITY_REF = re.compile(r"&([^#;\s][^;\s]*);")
+
+def check_entities(data):
+	# The predefined entities, plus the ones declared in the internal DTD subset
+	declared = { "amp", "lt", "gt", "quot", "apos" }
+	def declaration(name, is_parameter_entity, value, base, system_id, public_id, notation_name):
+		if (not is_parameter_entity) and (value is not None):
+			declared.add(name)
+	def external(context, base, system_id, public_id):
+		fail(f"References to external entities aren't supported: [{system_id}]")
+	def skipped(name, is_parameter_entity):
+		fail(f"The entity [{name}] can't be resolved (it's declared in an external DTD)")
+	def raw(markup):
+		# With no start element handler, start tags arrive here as written, which
+		# is the only way to see references within attribute values (expat drops
+		# the unresolvable ones from those without telling us)
+		if markup.startswith("<") and not markup.startswith(("<!", "<?")):
+			for name in ENTITY_REF.findall(markup):
+				if name not in declared:
+					fail(f"The entity [{name}] can't be resolved (it's declared in an external DTD)")
+	parser = xml.parsers.expat.ParserCreate()
+	parser.EntityDeclHandler = declaration
+	parser.ExternalEntityRefHandler = external
+	parser.SkippedEntityHandler = skipped
+	parser.DefaultHandlerExpand = raw
+	parser.Parse(data, True)
+
+#
 # Serialize the node without recursion (documents may be deeply nested), with
 # escaping that's correct regardless of the Python version
 #
@@ -120,6 +156,7 @@ def serialize(node, out):
 
 try:
 	data = sys.stdin.buffer.read()
+	check_entities(data)
 
 	# The DOM keeps namespace prefixes and declarations as written, as well
 	# as comments, processing instructions, and the DOCTYPE

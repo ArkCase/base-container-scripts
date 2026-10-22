@@ -96,6 +96,26 @@ openssl_decrypt()
 	return 0
 }
 
+#
+# usage: xml_value FILE ELEMENT [ELEMENT ...]
+#
+# Output the text of the element at the given path (from the root). The
+# elements are matched by their local names, so they're found whether the
+# document uses a namespace or not (i.e. POMs without xmlns, or metadata
+# written by newer versions of Maven)
+#
+xml_value()
+{
+	local FILE="${1}"
+	shift
+	local XPATH=""
+	local E=""
+	for E in "${@}" ; do
+		XPATH+="/*[local-name()='${E}']"
+	done
+	xmlstarlet sel -t -v "${XPATH}" < "${FILE}"
+}
+
 cleanup()
 {
 	[ -v WORKDIR ] && is_dir "${WORKDIR}" && rm -rf "${WORKDIR}" &>/dev/null
@@ -154,9 +174,9 @@ if [ -v MVN_GET_SERVER_ID ] ; then
 	# We have a server ID whose username/password combo we wish to consume
 	[ -n "${MVN_GET_SERVER_ID}" ] || fail "The value in MVN_GET_SERVER_ID may not be the empty string"
 	require_exe mvn-crypt
-	MVN_GET_USERNAME="$(mvn-crypt --quiet server decrypt "${MVN_GET_SERVER_ID}" username 2>&1)" || fail "Failed to decrypt the username for the server [${MVN_GET_SERVER_ID}] (rc=${?}): ${MVN_GET_USERNAME}"
+	MVN_GET_USERNAME="$(mvn-crypt --quiet server decrypt "${MVN_GET_SERVER_ID}" username)" || fail "Failed to decrypt the username for the server [${MVN_GET_SERVER_ID}] (rc=${?})"
 	[ -n "${MVN_GET_USERNAME}" ] || fail "The username for server [${MVN_GET_SERVER_ID}] is empty or nonexistent"
-	MVN_GET_PASSWORD="$(mvn-crypt --quiet server decrypt "${MVN_GET_SERVER_ID}" password)" || fail "Failed to decrypt the password for the server [${MVN_GET_SERVER_ID}] (rc=${?}): ${MVN_GET_PASSWORD}"
+	MVN_GET_PASSWORD="$(mvn-crypt --quiet server decrypt "${MVN_GET_SERVER_ID}" password)" || fail "Failed to decrypt the password for the server [${MVN_GET_SERVER_ID}] (rc=${?})"
 	[ -n "${MVN_GET_PASSWORD}" ] || fail "The password for server [${MVN_GET_SERVER_ID}] is empty or nonexistent"
 	NEED_DECRYPT="false"
 	ok "Decrypted the username and password for the server ${MVN_GET_SERVER_ID} from Maven's settings"
@@ -190,11 +210,12 @@ say "\tArtifact:    [${ARTIFACT}]"
 say "\tRepository:  [${REPO_URL}]"
 say "\tDestination: [${DEST}]"
 if [ -n "${AUTH}" ] ; then
+	# Only the username's hash is shown: an unsalted hash of the password
+	# would allow it to be guessed offline by anyone who can read the logs
 	USUM="$(echo -n "${AUTH}" | sed -e 's;:.*$;;g' | sha256sum | awk '{ print $1 }')"
-	PSUM="$(echo -n "${AUTH}" | sed -e 's;^[^:]\+:;;g' | sha256sum | awk '{ print $1 }')"
-	say "\tAuthentication (sha256 sums):"
-	say "\t🔒 Username: [${USUM}]"
-	say "\t🔑 Password: [${PSUM}]"
+	say "\tAuthentication:"
+	say "\t🔒 Username: [${USUM}] (sha256 sum)"
+	say "\t🔑 Password: [set]"
 else
 	say "\tNo authentication will be used"
 fi
@@ -216,7 +237,7 @@ if [ "${VERSION}" == "LATEST" ] || [ "${VERSION}" == "RELEASE" ] ; then
 	[ ${RC} -eq 0 ] || fail "Failed to download the artifact metadata for ${GROUP_ID}:${ARTIFACT_ID} from [${BASE}/maven-metadata.xml] (rc=${RC}):\n${OUT}"
 	xmllint "${XML}" &>/dev/null || fail "The artifact metadata for ${GROUP_ID}:${ARTIFACT_ID} downloaded from [${BASE}/maven-metadata.xml] is not valid XML"
 
-	FINAL_VERSION="$(xmlstarlet sel -t -v "/metadata/versioning/${VERSION,,}" < "${XML}")" || fail "Failed to identify the ${VERSION} version for ${GROUP_ID}:${ARTIFACT_ID} from the XML at [${BASE}/maven-metadata.xml]"
+	FINAL_VERSION="$(xml_value "${XML}" metadata versioning "${VERSION,,}")" || fail "Failed to identify the ${VERSION} version for ${GROUP_ID}:${ARTIFACT_ID} from the XML at [${BASE}/maven-metadata.xml]"
 	say "\t✅ The ${VERSION} version is ${FINAL_VERSION}"
 	VERSION="${FINAL_VERSION}"
 fi
@@ -232,8 +253,8 @@ if "${SUPPORT_SNAPSHOT}" && [[ "${VERSION^^}" =~ (^|[^a-zA-Z0-9])SNAPSHOT$ ]] ; 
 	[ ${RC} -eq 0 ] || fail "Failed to download the artifact metadata for ${GROUP_ID}:${ARTIFACT_ID}:${VERSION} from [${BASE}/maven-metadata.xml] (rc=${RC}):\n${OUT}"
 	xmllint "${XML}" &>/dev/null || fail "The artifact metadata for ${GROUP_ID}:${ARTIFACT_ID} downloaded from [${BASE}/maven-metadata.xml] is not valid XML"
 
-	TIMESTAMP="$(xmlstarlet sel -t -v '/metadata/versioning/snapshot/timestamp' < "${XML}")" || fail "No timestamp data is present for the required snapshot version, cannot continue"
-	BUILD_NUMBER="$(xmlstarlet sel -t -v '/metadata/versioning/snapshot/buildNumber' < "${XML}")" || fail "No build number data is present for the required snapshot version, cannot continue"
+	TIMESTAMP="$(xml_value "${XML}" metadata versioning snapshot timestamp)" || fail "No timestamp data is present for the required snapshot version, cannot continue"
+	BUILD_NUMBER="$(xml_value "${XML}" metadata versioning snapshot buildNumber)" || fail "No build number data is present for the required snapshot version, cannot continue"
 	FINAL_VERSION="$(echo -n "${VERSION}" | /usr/bin/sed -e "s/\(\b\)SNAPSHOT\(\b\)/\1${TIMESTAMP}-${BUILD_NUMBER}\2/gi")"
 	say "\t✅ The latest SNAPSHOT version is ${FINAL_VERSION}"
 fi
@@ -250,7 +271,7 @@ if [ -z "${EXTENSION}" ] ; then
 	xmllint "${POM}" &>/dev/null || fail "The artifact POM for ${GROUP_ID}:${ARTIFACT_ID}:${VERSION} downloaded from [${BASE}.pom] is not valid XML"
 
 	TAB="\t"
-	EXTENSION="$(xmlstarlet sel -N "p=http://maven.apache.org/POM/4.0.0" -t -v '/p:project/p:packaging' < "${POM}")" || true
+	EXTENSION="$(xml_value "${POM}" project packaging)" || true
 	[ -z "${EXTENSION}" ] && EXTENSION="jar"
 
 	# Some packaging types don't match the file extension of the artifact they produce

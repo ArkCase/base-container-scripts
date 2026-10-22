@@ -838,40 +838,30 @@ csv_to_list()
 to_array()
 {
 	local __VAR="${1}"
+	is_valid_envvar "${__VAR}" || return 1
 
-	# BUGFIX: make the behavior consistent with the old code.
-	# If the variable is not declared, then declare it as an
-	# empty array
-	[ -v "${__VAR}" ] || { declare -ga "${__VAR}" ; return 0 ; }
-
-	local __EXPORT="false"
 	case "$(__get_var_flags "${__VAR}")" in
 		# Ignore arrays and read-only variables
 		*a* | *A* ) return 0 ;;
 		*r* ) return 1 ;;
-
-		# If it's an exported variable, keep track of it
-		*x* ) __EXPORT="true" ;;
 	esac
 
-	# Do the conversion
-	local __V="${!__VAR}"
-
-	if [ -z "${__V}" ] ; then
-		# Empty strings should convert to empty arrays
-		unset "${__VAR}"
-		declare -ga "${__VAR}"
-	else
-		# This will yield a non-empty array
+	# Split the value (if any) respecting quotes
+	local __V="${!__VAR:-}"
+	local __ITEMS=()
+	if [ -n "${__V}" ] ; then
 		local __LIST=""
 		__LIST="$(to_list "${__V}")" || return 1
-		unset "${__VAR}"
-		declare -ga "${__VAR}"
-		readarray -t "${__VAR}" < <(echo -n "${__LIST}")
+		readarray -t __ITEMS < <(echo -n "${__LIST}")
 	fi
 
-	# Restore the export flag
-	as_boolean "${__EXPORT}" && declare -x "${__VAR}"
+	# Convert it in place through a name reference, which resolves to the
+	# variable that's visible from here: the caller's local if it has one, or
+	# the global otherwise (which is created if necessary). Assigning a list
+	# turns it into an array, and keeps its attributes. An empty or undeclared
+	# variable becomes an empty array.
+	declare -n __REF="${__VAR}"
+	__REF=( "${__ITEMS[@]}" )
 	return 0
 }
 
@@ -898,17 +888,15 @@ __var_set_tool()
 
 	is_valid_envvar "${__VAR}" || fail "Invalid variable name [${__VAR}]"
 
-	local __RESULT=""
+	# Ignore arrays and read-only variables (even if they're declared, but unset
+	# or empty, since [ -v VAR ] is false for those)
+	case "$(__get_var_flags "${__VAR}")" in
+		*a* | *A* | *r* ) return 0 ;;
+	esac
 
+	local __RESULT=""
 	if [ -v "${__VAR}" ] ; then
 		__RESULT="${!__VAR}" &>/dev/null || fail "Invalid variable name [${__VAR}]"
-
-		# Identify if this is one of the types of variables
-		# that we have problems with
-		case "$(__get_var_flags "${__VAR}")" in
-			# Ignore arrays and read-only variables
-			*a* | *A* | *r* ) return 0 ;;
-		esac
 	fi
 
 	# No value or an empty one? Use the alternate default
@@ -1105,9 +1093,10 @@ secs_to_timestr()
 	local __C=""
 	for __C in D H M S ; do
 		__MUL=$(__get_time_mul "${__C}")
-		(( __SIZE = ( __SECS / __MUL ) ))
+		# Use assignments, since an (( )) that evaluates to 0 is a failure
+		__SIZE=$(( __SECS / __MUL ))
 		[ ${__SIZE} -gt 0 ] && __RET+="${__SIZE}${__C}"
-		(( __SECS -= ( __SIZE * __MUL ) ))
+		__SECS=$(( __SECS - ( __SIZE * __MUL ) ))
 	done
 
 	[ -n "${__RET}" ] || __RET="0S"
@@ -1150,7 +1139,8 @@ timestr_to_secs()
 		[[ "${__PARTS[__i]}" =~ ^${__NUM}([DHMS])$ ]] || continue
 		__SIZE=${BASH_REMATCH[1]}
 		__MUL=$(__get_time_mul "${BASH_REMATCH[2]}")
-		(( __SECS += __SIZE * __MUL ))
+		# Use an assignment, since an (( )) that evaluates to 0 is a failure
+		__SECS=$(( __SECS + ( __SIZE * __MUL ) ))
 	done
 
 	echo -n ${__SECS}
@@ -1249,10 +1239,13 @@ render_password()
 
 	[[ "${__LENGTH}" =~ ^[1-9][0-9]*$ ]] || __LENGTH=32
 
+	# Read fixed-size chunks rather than cutting off an endless stream, so no
+	# command in the pipeline fails (which would trigger the ERR trap)
 	local __V=""
-	local __REST=""
-	read __V __REST < <(tr -dc '[:alnum:]' < /dev/urandom | fold -w ${__LENGTH} | head -1)
-	echo -n "${__V}"
+	while [ ${#__V} -lt ${__LENGTH} ] ; do
+		__V+="$(head -c 1024 /dev/urandom | tr -dc '[:alnum:]')"
+	done
+	echo -n "${__V:0:${__LENGTH}}"
 }
 
 #
@@ -1677,10 +1670,13 @@ auth_params()
 	esac
 
 	# Within a quoted curl config value, backslashes and double
-	# quotes must be escaped (backslashes first!)
+	# quotes must be escaped (backslashes first!), and newlines
+	# and carriage returns too, or they'd start a new config line
 	local CREDS="${USER}:${PASS}"
 	CREDS="${CREDS//\\/\\\\}"
 	CREDS="${CREDS//\"/\\\"}"
+	CREDS="${CREDS//$'\n'/\\n}"
+	CREDS="${CREDS//$'\r'/\\r}"
 	printf 'user "%s"\n' "${CREDS}"
 }
 
@@ -1796,13 +1792,15 @@ set_godebug_fips140()
 	set_or_default GODEBUG
 	local FLAG="fips140"
 	local ARR=()
-	readarray -t ARR < <(echo -n "${GODEBUG}" | tr ',' '\n' | grep -Evi "^\s*${FLAG}=" | sed -e '/^\s*$/d')
+	IFS="," read -r -a ARR <<< "${GODEBUG}"
 
 	# Start with a new value
 	local NEW=""
-	# Add all the previous values
+	# Add all the previous values, except blank ones and our flag's
 	local V=""
 	for V in "${ARR[@]}" ; do
+		[[ "${V}" =~ ^[[:space:]]*$ ]] && continue
+		[[ "${V,,}" =~ ^[[:space:]]*${FLAG}= ]] && continue
 		NEW+="${NEW:+,}${V}"
 	done
 
@@ -1862,6 +1860,12 @@ get_cluster_domain()
 # values (verbatim, including leading/trailing whitespace and NUL bytes),
 # and the "status". The command runs in a subshell, so it may be a shell
 # function, but it can't alter the caller's state.
+#
+# NOTE: as with any function that's called from an if/while condition or
+# an && or || list, bash ignores "set -e" within a function run this way
+# (even if it's set again inside it). So a function that may fail midway
+# must check for that itself (i.e. "some_command || return"), or else it
+# will continue, and its status will be that of its last command.
 #
 # Invalid UTF-8 sequences in the output are replaced by jq with U+FFFD.
 #

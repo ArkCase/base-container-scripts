@@ -8,7 +8,10 @@ set_or_default LOOP_TERMINATION_FILE "/tmp/.terminate"
 set_or_default MARKER "${LOOP_TERMINATION_FILE}"
 
 
-MARKER_DIR="$(readlink -f "$(dirname "${MARKER}")")"
+# The marker's directory must already exist, since that's what gets watched
+MARKER_DIR="$(dirname "${MARKER}")"
+require_dir_readable "${MARKER_DIR}"
+MARKER_DIR="$(readlink -f "${MARKER_DIR}")" || fail "Failed to resolve the path for the directory [${MARKER_DIR}]"
 MARKER_NAME="$(basename "${MARKER}")"
 MARKER="${MARKER_DIR}/${MARKER_NAME}"
 

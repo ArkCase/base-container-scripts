@@ -81,7 +81,8 @@ openssl_decrypt()
 	[ -v MVN_GET_ENCRYPTION_KEY ] || local MVN_GET_ENCRYPTION_KEY=""
 	if [ -n "${MVN_GET_ENCRYPTION_KEY}" ] ; then
 		local OUT=""
-		if OUT="$(echo -n "${VALUE}" | decrypt MVN_GET_ENCRYPTION_KEY "${VAR_NAME}" 2>&1)" ; then
+		# The key isn't exported (see below), so hand it only to decrypt
+		if OUT="$(echo -n "${VALUE}" | MVN_GET_ENCRYPTION_KEY="${MVN_GET_ENCRYPTION_KEY}" decrypt MVN_GET_ENCRYPTION_KEY "${VAR_NAME}" 2>&1)" ; then
 			echo -n "${OUT}"
 			return 0
 		else
@@ -144,6 +145,10 @@ CLASSIFIER="${BASH_REMATCH[8]}"
 
 require_exe xmlstarlet xmllint curl
 
+# The credentials (and the key that decrypts them) are only for our own use, so
+# keep them out of the environment of every child process (curl, render-helpers, etc.)
+export -n AUTH MVN_GET_USERNAME MVN_GET_PASSWORD MVN_GET_ENCRYPTION_KEY
+
 NEED_DECRYPT="true"
 if [ -v MVN_GET_SERVER_ID ] ; then
 	# We have a server ID whose username/password combo we wish to consume
@@ -157,7 +162,7 @@ if [ -v MVN_GET_SERVER_ID ] ; then
 	ok "Decrypted the username and password for the server ${MVN_GET_SERVER_ID} from Maven's settings"
 fi
 
-export AUTH=""
+AUTH=""
 if [ -v MVN_GET_USERNAME ] && [ -v MVN_GET_PASSWORD ] ; then
 	[ -n "${MVN_GET_USERNAME}" ] || fail "The value in MVN_GET_USERNAME may not be the empty string"
 	[ -n "${MVN_GET_PASSWORD}" ] || fail "The value in MVN_GET_PASSWORD may not be the empty string"

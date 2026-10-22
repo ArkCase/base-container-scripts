@@ -1,3 +1,2 @@
 #!/bin/bash
-export AES_CRYPT_MODE="decrypt"
-exec aes-crypt "${@}"
+exec aes-crypt decrypt "${@}"

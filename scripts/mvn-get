@@ -6,42 +6,60 @@ DEFAULT_MVN_CENTRAL_REPO="https://repo1.maven.org/maven2"
 
 set_or_default DOWNLOAD_RETRY 30
 set_or_default DOWNLOAD_RETRY_SEC 5
+[[ "${DOWNLOAD_RETRY}" =~ ^[1-9][0-9]*$ ]] || fail "Invalid DOWNLOAD_RETRY value [${DOWNLOAD_RETRY}] - must be a positive number"
+[[ "${DOWNLOAD_RETRY_SEC}" =~ ^(0|[1-9][0-9]*)$ ]] || fail "Invalid DOWNLOAD_RETRY_SEC value [${DOWNLOAD_RETRY_SEC}] - must be a non-negative number"
 
 download()
 {
 	local URL="${1}"
 	local AUTH="${2:-""}"
 	local DEST="${3:-""}"
-	[ -n "${AUTH}" ] && AUTH="--user ${AUTH}"
+	# Quote the credentials properly for curl's config syntax (i.e. for spaces, quotes, etc.)
+	[ -n "${AUTH}" ] && AUTH="$(auth_params "${AUTH}")"
 	[ -n "${DEST}" ] && DEST=(--output "${DEST}")
-	local ATTEMPT=1
-	while [ ${ATTEMPT} -lt ${DOWNLOAD_RETRY} ] ; do
-		if [ ${ATTEMPT} -gt 1 ] ; then
-			sleep ${DOWNLOAD_RETRY_SEC} || return ${?}
-		fi
+	local ATTEMPT=0
+	local RC=0
+	local HTTP_CODE=""
+	while true ; do
+		(( ++ATTEMPT ))
+		RC=0
 
-		local RC=0
-		curl \
+		# All retries are handled by this loop, so curl doesn't retry on its own
+		HTTP_CODE="$(curl \
 			--location \
 			--fail \
 			--disallow-username-in-url \
-			--retry-connrefused \
-			--retry-delay ${DOWNLOAD_RETRY_SEC} \
-			--retry ${DOWNLOAD_RETRY} \
+			--write-out '%{http_code}' \
 			--config <(echo -n "${AUTH}") \
 			"${DEST[@]}" \
-			"${URL}" || RC=${?}
+			"${URL}")" || RC=${?}
 
 		# If there were no errors, return immediately
 		[ ${RC} -eq 0 ] && return 0
 
-		# If there's a retryable error, then do so
+		# If the error isn't retryable, fail immediately
 		case ${RC} in
-			16 | 18 | 26 | 28 | 35 | 36 | 55 | 56 |  92 | 95 | 96 ) (( ATTEMPT++ )) ; continue ;;
+			# Connection refused, and transient network/transfer errors
+			7 | 16 | 18 | 26 | 28 | 35 | 36 | 55 | 56 |  92 | 95 | 96 ) ;;
+
+			# HTTP errors: only retry the transient ones
+			22 )
+				case "${HTTP_CODE}" in
+					408 | 429 | 500 | 502 | 503 | 504 ) ;;
+					* ) return ${RC} ;;
+				esac
+				;;
+
+			* ) return ${RC} ;;
 		esac
 
-		return ${RC}
+		# Retryable error ... but have we run out of attempts?
+		[ ${ATTEMPT} -lt ${DOWNLOAD_RETRY} ] || break
+		sleep ${DOWNLOAD_RETRY_SEC} || return ${?}
 	done
+
+	# We ran out of attempts, so return the last error
+	return ${RC}
 }
 
 openssl_decrypt()
@@ -223,12 +241,17 @@ if [ -z "${EXTENSION}" ] ; then
 	RC=0
 	POM="${WORKDIR}/file.pom"
 	OUT="$(download "${BASE}.pom" "${AUTH}" "${POM}" 2>&1)" || RC=${?}
-	[ ${RC} -eq 0 ] || fail "Failed to download the artifact POM for ${GROUP_ID}:${ARTIFACT_ID}:${VERSION} from [${BASE}.pom] (rc=${?}):\n${OUT}"
+	[ ${RC} -eq 0 ] || fail "Failed to download the artifact POM for ${GROUP_ID}:${ARTIFACT_ID}:${VERSION} from [${BASE}.pom] (rc=${RC}):\n${OUT}"
 	xmllint "${POM}" &>/dev/null || fail "The artifact POM for ${GROUP_ID}:${ARTIFACT_ID}:${VERSION} downloaded from [${BASE}.pom] is not valid XML"
 
 	TAB="\t"
 	EXTENSION="$(xmlstarlet sel -N "p=http://maven.apache.org/POM/4.0.0" -t -v '/p:project/p:packaging' < "${POM}")" || true
 	[ -z "${EXTENSION}" ] && EXTENSION="jar"
+
+	# Some packaging types don't match the file extension of the artifact they produce
+	case "${EXTENSION}" in
+		bundle | maven-plugin | ejb | eclipse-plugin | maven-archetype ) EXTENSION="jar" ;;
+	esac
 fi
 say "${TAB}✅ Will download the ${EXTENSION} artifact"
 
@@ -265,7 +288,10 @@ fi
 doing "Final Version: [${FINAL_VERSION}]"
 doing "Final File:    [${DEST}]"
 doing "Final URL:     [${URL}]"
-download "${URL}" "${AUTH}" "${DEST}" || fail "Failed to complete the download (rc=${?})"
+# Download into the work directory first, so a failed download can't clobber an existing file
+DOWNLOADED="${WORKDIR}/${FILENAME}"
+download "${URL}" "${AUTH}" "${DOWNLOADED}" || fail "Failed to complete the download (rc=${?})"
+mv -f "${DOWNLOADED}" "${DEST}" || fail "Failed to move the downloaded file into [${DEST}] (rc=${?})"
 ok "Download successful!"
 type -P render-helpers &>/dev/null || exit 0
 cleanup || true

@@ -10,7 +10,7 @@ LOG="/tmp/${__SCRIPT}-${MARK}.log"
 redirect_logs "${LOG}"
 
 eyes "Running as: $(id)"
-running "Parameters: [ ${0@Q} ${@@Q} ]"
+running "Parameters: [ ${0@Q} ${*@Q} ]"
 warn "Environment:\n$(env | sort)"
 say "================================================================================"
 eyes "BEGIN OUTPUT"

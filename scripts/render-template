@@ -35,10 +35,10 @@ MISSING_KEY="${MISSING_KEY,,}"
 
 # Check validity ... use default if invalid
 
-# other values for missingkey:
+# valid values for missingkey (invalid values are replaced with "zero"):
 #  default/invalid = Do nothing and continue execution, print "<no value>" if necessary
-#  zero = Return the "zero value" for the element
-#  error (default) = Stop execution with an error
+#  zero (default) = Return the "zero value" for the element
+#  error = Stop execution with an error
 case "${MISSING_KEY}" in
 	default | invalid | zero | error ) ;;
 	* ) MISSING_KEY="zero" ;;

@@ -1,38 +1,127 @@
-#!/bin/bash
-set -euo pipefail
-. /.functions
+#!/usr/bin/python3
+#
+# usage: aes-crypt (encrypt|decrypt) [KEY_VARIABLE_NAME [SALT_STRING]]
+#
+# Encrypts (or decrypts) STDIN into STDOUT using AES-256-CBC, with the output
+# (or input) encoded as single-line base64. The key is derived via PBKDF2
+# (HMAC-SHA256) from the password held in the environment variable named
+# KEY_VARIABLE_NAME (default: ENCRYPTION_KEY). If KEY_VARIABLE_NAME is given,
+# that variable must be set (it may be empty). If its value is empty (or
+# ENCRYPTION_KEY is unset), DEFAULT_${KEY_VARIABLE_NAME} is used instead. If
+# there's still no password, the data is passed through unmodified.
+#
+# The salt and IV are derived from SALT_STRING (default: ENCRYPTED_VALUE),
+# and the number of PBKDF2 iterations is taken from AES_PBKDF2_ITER (default:
+# 10000). The same values must be used to decrypt what was encrypted.
+#
+# The password and derived key are never placed on any command line. All
+# cryptography is performed by the system's OpenSSL library (hashlib uses it
+# for PBKDF2, and AES is called directly via ctypes), so it's subject to the
+# FIPS provider when that's enabled.
+#
+import base64
+import ctypes
+import hashlib
+import os
+import re
+import sys
 
-# Enable debugging ...
-set_as_boolean DEBUG
-${DEBUG} && set -x
+DEFAULT_KEY_VAR = "ENCRYPTION_KEY"
+DEFAULT_SALT = "ENCRYPTED_VALUE"
+DEFAULT_ITERATIONS = 10000
+ITERATIONS_VAR = "AES_PBKDF2_ITER"
+KEY_SIZE = 32
+BLOCK_SIZE = 16
 
-KEY_VAR="ENCRYPTION_KEY"
-if [ ${#} -ge 1 ] ; then
-	export V="${1}"
-	( echo "${!V}" ) &>/dev/null || fail "Invalid encryption key variable name [${V}]" 1>&2
-	unset V
-	KEY_VAR="${1}"
-fi
+def fail(msg):
+	print(f"❌ {msg}", file=sys.stderr)
+	sys.exit(1)
 
-[ ${#} -ge 2 ] && TARGET_VAR="${2}" || TARGET_VAR=""
-[ -n "${TARGET_VAR}" ] || TARGET_VAR="ENCRYPTED_VALUE"
+def usage():
+	fail(f"usage: {os.path.basename(sys.argv[0])} (encrypt|decrypt) [KEY_VARIABLE_NAME [SALT_STRING]]")
 
-set_or_default "${KEY_VAR}"
-if [ -n "${!KEY_VAR}" ] ; then
-	# Generate the key and salt
-	read SALT REST < <(echo "${TARGET_VAR}" | sha256sum)
-	KEY="$(openssl kdf -keylen 32 -kdfopt digest:SHA256 -kdfopt pass:"${!KEY_VAR}" -kdfopt hexsalt:"${SALT:0:32}" -kdfopt iter:10000 PBKDF2)"
+def get_password(key_var):
+	password = os.environb.get(key_var.encode(), b"")
+	if not password:
+		password = os.environb.get(f"DEFAULT_{key_var}".encode(), b"")
+	return password
 
-	set_or_default AES_CRYPT_MODE "encrypt"
-	case "${AES_CRYPT_MODE}" in
-		encrypt ) FLAG="-e" ;;
-		decrypt ) FLAG="-d" ;;
-		* ) fail "Invalid AES_CRYPT_MODE value [${AES_CRYPT_MODE}]" ;;
-	esac
+def get_iterations():
+	value = os.environ.get(ITERATIONS_VAR, "")
+	if not value:
+		return DEFAULT_ITERATIONS
+	if not re.match("^[1-9][0-9]*$", value):
+		fail(f"Invalid {ITERATIONS_VAR} value [{value}]")
+	return int(value)
 
-	# Process the value
-	exec openssl enc -aes-256-cbc -a -A -K "${KEY//:/}" -iv "${SALT:32:32}" "${FLAG}"
-else
-	# Don't process anything ...
-	exec cat
-fi
+def aes_256_cbc(encrypt, key, iv, data):
+	# hashlib has already loaded the system's libcrypto, so this is the same library
+	lib = ctypes.CDLL("libcrypto.so.3")
+	lib.EVP_CIPHER_fetch.restype = ctypes.c_void_p
+	lib.EVP_CIPHER_fetch.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
+	lib.EVP_CIPHER_free.argtypes = [ctypes.c_void_p]
+	lib.EVP_CIPHER_CTX_new.restype = ctypes.c_void_p
+	lib.EVP_CIPHER_CTX_free.argtypes = [ctypes.c_void_p]
+	lib.EVP_CipherInit_ex2.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_void_p]
+	lib.EVP_CipherUpdate.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_int), ctypes.c_char_p, ctypes.c_int]
+	lib.EVP_CipherFinal_ex.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_int)]
+
+	cipher = lib.EVP_CIPHER_fetch(None, b"AES-256-CBC", None)
+	if not cipher:
+		fail("The AES-256-CBC cipher is not available from OpenSSL")
+	ctx = lib.EVP_CIPHER_CTX_new()
+	try:
+		if not ctx or lib.EVP_CipherInit_ex2(ctx, cipher, key, iv, 1 if encrypt else 0, None) != 1:
+			fail("Failed to initialize the AES-256-CBC cipher")
+		out = ctypes.create_string_buffer(len(data) + BLOCK_SIZE)
+		outl = ctypes.c_int(0)
+		if lib.EVP_CipherUpdate(ctx, out, ctypes.byref(outl), data, len(data)) != 1:
+			fail("bad encrypt" if encrypt else "bad decrypt")
+		result = out.raw[:outl.value]
+		if lib.EVP_CipherFinal_ex(ctx, out, ctypes.byref(outl)) != 1:
+			fail("bad encrypt" if encrypt else "bad decrypt")
+		return result + out.raw[:outl.value]
+	finally:
+		lib.EVP_CIPHER_CTX_free(ctx)
+		lib.EVP_CIPHER_free(cipher)
+
+def main():
+	if len(sys.argv) < 2 or len(sys.argv) > 4 or sys.argv[1] not in ("encrypt", "decrypt"):
+		usage()
+	encrypt = (sys.argv[1] == "encrypt")
+
+	key_var = DEFAULT_KEY_VAR
+	if len(sys.argv) > 2:
+		# An explicitly-named key variable must exist (even if empty)
+		key_var = sys.argv[2]
+		if (not re.match("^[a-zA-Z_][a-zA-Z0-9_]*$", key_var)) or (key_var not in os.environ):
+			fail(f"Invalid encryption key variable name [{key_var}]")
+
+	salt_string = sys.argv[3] if len(sys.argv) > 3 else ""
+	if not salt_string:
+		salt_string = DEFAULT_SALT
+
+	password = get_password(key_var)
+	if not password:
+		# Don't process anything ...
+		sys.stdout.buffer.write(sys.stdin.buffer.read())
+		return
+
+	# The first half of the digest is the salt, the second half is the IV
+	digest = hashlib.sha256(os.fsencode(salt_string) + b"\n").digest()
+	salt = digest[:16]
+	iv = digest[16:]
+	key = hashlib.pbkdf2_hmac("sha256", password, salt, get_iterations(), KEY_SIZE)
+
+	data = sys.stdin.buffer.read()
+	if encrypt:
+		sys.stdout.write(base64.b64encode(aes_256_cbc(True, key, iv, data)).decode())
+	else:
+		try:
+			data = base64.b64decode(data.strip(), validate=True)
+		except ValueError:
+			fail("bad decrypt")
+		sys.stdout.buffer.write(aes_256_cbc(False, key, iv, data))
+
+if __name__ == "__main__":
+	main()

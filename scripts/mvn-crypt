@@ -12,12 +12,16 @@
 #
 # USAGE:
 #
-#     Common parameters: [-S settings-security.xml | --security settings-security.xml] [-s settings.xml | --settings settings.xml] [-l .m2-location | --location .m2-location] [-m | --master]
+#     Common parameters: [-S settings-security.xml | --security settings-security.xml] [-s settings.xml | --settings settings.xml] [-l .m2-location | --location .m2-location] [-q | --quiet]
 #
-#     m2crypt [common] decrypt serverId value
-#         (if -m or --master are set, the serverId and value parameters are ignored, and the master password is decrypted)
-#     m2crypt [common] encrypt string
-#         (if -m or --master are set, the password is encrypted for use as a master password)
+#     mvn-crypt [common] master encrypt value
+#         (encrypt the value for use as a master password)
+#     mvn-crypt [common] master decrypt [value]
+#         (decrypt the given value, or the current master password if none is given)
+#     mvn-crypt [common] server encrypt value
+#         (encrypt the value for use in settings.xml, using the master password)
+#     mvn-crypt [common] server decrypt serverId (username|password|privateKey|passphrase)
+#         (decrypt the given field from the server's entry in settings.xml)
 #
 
 import argparse

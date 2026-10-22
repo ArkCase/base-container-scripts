@@ -1,11 +1,18 @@
 #!/usr/bin/python3
 
+import datetime
 import yaml
 import json
 import sys
 
+# YAML dates and timestamps have no JSON equivalent, so render them as ISO-8601 strings
+def json_default(o):
+	if isinstance(o, (datetime.date, datetime.datetime)):
+		return o.isoformat()
+	raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+
 try:
 	yaml_object = yaml.safe_load(sys.stdin)
-	json.dump(yaml_object, sys.stdout)
+	json.dump(yaml_object, sys.stdout, default=json_default)
 except KeyboardInterrupt:
 	sys.exit(1)

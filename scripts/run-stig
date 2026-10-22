@@ -5,8 +5,8 @@ set -euo pipefail
 
 run()
 {
-	running "Running: ${@}"
-	( set +euo pipefail ; exec "${@}" )
+	running "Running: ${*}"
+	( exec "${@}" )
 	return ${?}
 }
 
@@ -24,8 +24,8 @@ STIG_DIR="$(readlink -f "${STIG_DIR}")"
 
 eyes "Running the STIG remediation scripts from [${STIG_DIR}]"
 cd "${STIG_DIR}" || fail "Failed to cd into [${STIG_DIR}] (rc=${?})"
-while read SCRIPT ; do
+while read -r SCRIPT ; do
 	running "Applying [${SCRIPT}]..."
-	OUT="$(run "./${SCRIPT}" 2>&1)" && ok "Remediation successful!" || fail "Remediation failed (rc=${?}):\n${OUT}"
+	OUT="$(run "./${SCRIPT}" < /dev/null 2>&1)" && ok "Remediation successful!" || fail "Remediation failed (rc=${?}):\n${OUT}"
 done < <(find . -type f -name "*.sh" -executable | sed -e 's;^[.]/;;g' | sort)
 ok "Remediations complete!"

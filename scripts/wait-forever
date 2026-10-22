@@ -3,15 +3,30 @@
 set -euo pipefail
 . /.functions
 
-set_or_default MARKER "/tmp/terminate"
+# Use the same termination marker as run-in-loop and terminate-run-loop
+set_or_default LOOP_TERMINATION_FILE "/tmp/.terminate"
+set_or_default MARKER "${LOOP_TERMINATION_FILE}"
 
 
 MARKER_DIR="$(readlink -f "$(dirname "${MARKER}")")"
 MARKER_NAME="$(basename "${MARKER}")"
 MARKER="${MARKER_DIR}/${MARKER_NAME}"
 
-sleeping "Sleeping until the marker file is created"
-OUT="$(inotifywait --quiet --event close_write --include "${MARKER_NAME}" "${MARKER_DIR}" 2>&1)" || fail "File wait failed (rc=${?}): ${OUT}"
+sleeping "Sleeping until the marker file [${MARKER}] is created"
+
+# The marker may already exist, or be created before the watch is set up, so
+# check for it before every wait, and re-check periodically (via the timeout).
+# Any event in the directory just triggers a new check for the marker.
+while [ ! -e "${MARKER}" ] ; do
+	RC=0
+	OUT="$(inotifywait --quiet --timeout 10 --event close_write --event moved_to "${MARKER_DIR}" 2>&1)" || RC=${?}
+
+	# 0 = an event happened, 2 = the wait timed out, anything else is an error
+	case "${RC}" in
+		0 | 2 ) ;;
+		* ) fail "File wait failed (rc=${RC}): ${OUT}" ;;
+	esac
+done
 
 require_file_readable "${MARKER}"
 

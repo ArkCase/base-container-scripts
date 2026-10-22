@@ -40,15 +40,17 @@ run_child()
 	"${@}" <&0 &
 	CHILD_PID="${!}"
 
-	local RC=0
-	while true ; do
-		# (stderr is silenced to suppress the job control status notices)
-		wait "${CHILD_PID}" 2>/dev/null && RC=0 || RC=${?}
-
-		# If wait was interrupted by a trapped signal, the child is still
-		# alive (or not yet reaped), so we wait on it again
-		kill -0 "${CHILD_PID}" &>/dev/null || break
+	# If wait is interrupted by a trapped signal, the child is still
+	# alive (or not yet reaped), so we wait on it again until it's gone
+	# (stderr is silenced to suppress the job control status notices)
+	while kill -0 "${CHILD_PID}" &>/dev/null ; do
+		wait "${CHILD_PID}" 2>/dev/null || true
 	done
+
+	# The child is gone, so this returns its actual exit status (bash keeps
+	# it), even if the last wait above was interrupted by a signal
+	local RC=0
+	wait "${CHILD_PID}" 2>/dev/null || RC=${?}
 	CHILD_PID=""
 	return ${RC}
 }
@@ -103,12 +105,12 @@ while true ; do
 	terminate_if_requested "${LOOP_TERMINATION_FILE}" "${ITERATION}"
 
 	(( ++ITERATION ))
-	running "Iteration # ${ITERATION}: ${@@Q}"
+	running "Iteration # ${ITERATION}: ${*@Q}"
 	run_child "${@}" && ok "Exited with status code 0" || err "Exited with status code ${?}"
 	terminate_if_signaled "${ITERATION}"
 	[ ${RUN_LOOP_WAIT_SECS} -gt 0 ] || continue
 
 	terminate_if_requested "${LOOP_TERMINATION_FILE}" "${ITERATION}"
 	sleeping "Waiting ${RUN_LOOP_WAIT} before the next iteration"
-	run_child sleep ${RUN_LOOP_WAIT_SECS} || terminate_if_signaled "${ITERATION}" || fail "Sleep interrupted"
+	run_child sleep ${RUN_LOOP_WAIT_SECS} || { terminate_if_signaled "${ITERATION}" ; fail "Sleep interrupted" ; }
 done

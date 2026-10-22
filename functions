@@ -8,7 +8,7 @@
 #
 # If this has already been called, then we don't
 # repeat the work. To do a reload, simply run
-# "undef functions_loaded" to skip this step
+# "unset -f functions_loaded" to skip this step
 #
 declare -f functions_loaded &>/dev/null && return 0
 
@@ -26,7 +26,7 @@ functions_loaded()
 # usage: timestamp
 #
 # Outputs the current system time in UTC, using ISO-8601
-# format with nanosecond resolution
+# format with millisecond resolution
 #
 timestamp()
 {
@@ -95,6 +95,12 @@ __white__="$(ansi 37)"
 __tan__="$(ansi 33)"
 __blue__="$(ansi 34)"
 __gray__="$(ansi 90)"
+
+# Honor the NO_COLOR convention (https://no-color.org)
+if [ -n "${NO_COLOR:-}" ] ; then
+	__bold__="" ; __underline__="" ; __reset__=""
+	__red__="" ; __green__="" ; __white__="" ; __tan__="" ; __blue__="" ; __gray__=""
+fi
 
 #
 # Headers and Logging
@@ -174,10 +180,10 @@ eyes()
 }
 
 #
-# usage: [EXIT_VALUE=X] fail [args ...]
+# usage: [EXIT_CODE=X] fail [args ...]
 #
 # End processing (via a call to exit) with the exit code
-# V (default is 1 if not specified), and outputting
+# EXIT_CODE (default is 1 if not specified), and outputting
 # the given message using the err function.
 #
 fail()
@@ -190,7 +196,7 @@ fail()
 # usage: quit [args ...]
 #
 # End processing (via a call to exit) with the exit code
-# 0, and outputting the given message using the err function.
+# 0, and outputting the given message using the say function.
 #
 quit()
 {
@@ -209,6 +215,8 @@ on_err()
 	err "Script error"
 	echo -e "\tCOMMAND: [${BASH_COMMAND}]"
 	echo -e "\tEXIT CODE: ${RC}"
+	local N=0
+    local M=0
 	for (( N=1 ; N < ${#BASH_SOURCE[@]} ; N++ )) ; do
 		M=$(( N - 1 )) || true
 		echo -e "\t\tat ${BASH_SOURCE[${N}]@Q} @ ${BASH_LINENO[${M}]}"
@@ -217,7 +225,7 @@ on_err()
 }
 
 #
-# usage: declare_base_vars
+# usage: define_base_vars [SCRIPT]
 #
 # Declares some base-use variables:
 #
@@ -328,7 +336,7 @@ is_dir_readwrite()
 }
 
 #
-# usage: render_dir_error DIR CODE
+# usage: dir_error DIR CODE
 #
 # Generates an error message corresponding to the error code
 # as returned by the is_dir function family. This exists
@@ -336,36 +344,49 @@ is_dir_readwrite()
 #
 dir_error()
 {
+	local __MSG="$(__dir_error_msg "${@}")"
+	[ -z "${__MSG}" ] || err "${__MSG}"
+	return 0
+}
+
+#
+# usage: __dir_error_msg DIR CODE
+#
+# Outputs (but doesn't log) the message dir_error would render
+#
+__dir_error_msg()
+{
 	local __DIR="${1}"
 	local __CODE="${2}"
-	local __MSG=""
 	case "${__CODE}" in
 		0 ) ;;
-		1 ) __MSG="The directory name may not be the empty string" ;;
-		2 ) __MSG="The directory [${__DIR}] does not exist" ;;
-		3 ) __MSG="The path [${__DIR}] is not a directory" ;;
-		4 ) __MSG="The directory [${__DIR}] is not executable" ;;
-		5 ) __MSG="The directory [${__DIR}] is not readable" ;;
-		6 ) __MSG="The directory [${__DIR}] is not writable" ;;
-		* ) __MSG="Unknown error code [${__CODE}] when examining directory [${__DIR}]" ;;
+		1 ) echo -n "The directory name may not be the empty string" ;;
+		2 ) echo -n "The directory [${__DIR}] does not exist" ;;
+		3 ) echo -n "The path [${__DIR}] is not a directory" ;;
+		4 ) echo -n "The directory [${__DIR}] is not executable" ;;
+		5 ) echo -n "The directory [${__DIR}] is not readable" ;;
+		6 ) echo -n "The directory [${__DIR}] is not writable" ;;
+		* ) echo -n "Unknown error code [${__CODE}] when examining directory [${__DIR}]" ;;
 	esac
-	[ -n "${__MSG}" ] && err "${__MSG}"
 }
+
 #
 # usage: fail_dir DIR CODE
 #
 # Exit the current script (as when calling fail), but
 # render an error message corresponding to the exit code
-# of a function in the is_dir family
+# of a function in the is_dir family. If the exit code
+# is 0, then it will simply return 0 and do nothing
 #
 fail_dir()
 {
 	local __DIR="${1}"
 	local __CODE="${2}"
-	local __MSG="$(dir_error "${__DIR}" "${__CODE}")"
 
-	echo -e "${__MSG}"
-	exit ${EXIT_CODE:-1}
+	# Don't fail if the exit code is 0
+	[ ${__CODE} -eq 0 ] && return 0
+
+	fail "$(__dir_error_msg "${__DIR}" "${__CODE}")"
 }
 
 #
@@ -385,7 +406,12 @@ ensure_dir()
 
 	is_dir_readwrite "${__DIR}" && return 0
 
-	mkdir -p "${__DIR}" || fail "The directory [${__DIR}] did not exist and could not be created"
+	if [ -n "${__DIR}" ] && [ ! -e "${__DIR}" ] ; then
+		mkdir -p "${__DIR}" || fail "The directory [${__DIR}] did not exist and could not be created"
+	fi
+
+	# Whether it already existed or we just created it, it must be usable
+	require_dir_readwrite "${__DIR}"
 }
 
 __require_dir()
@@ -531,8 +557,8 @@ is_file_readwrite()
 {
 	local __FILE="${1}"
 	is_file "${__FILE}" || return ${?}
-	[ -r "${__FILE}" ] || return 3
-	[ -w "${__FILE}" ] || return 4
+	[ -r "${__FILE}" ] || return 4
+	[ -w "${__FILE}" ] || return 5
 	return 0
 }
 
@@ -556,7 +582,7 @@ is_file_executable()
 {
 	local __FILE="${1}"
 	is_file_readable "${__FILE}" || return ${?}
-	[ -x "${__FILE}" ] || return 5
+	[ -x "${__FILE}" ] || return 6
 	return 0
 }
 
@@ -582,7 +608,8 @@ file_error()
 		6 ) __MSG="The file [${__FILE}] is not executable" ;;
 		* ) __MSG="Unknown error code [${__CODE}] when examining file [${__FILE}]" ;;
 	esac
-	[ -n "${__MSG}" ] && echo -e "${__MSG}"
+	[ -z "${__MSG}" ] || echo -e "${__MSG}"
+	return 0
 }
 
 #
@@ -728,7 +755,7 @@ as_boolean()
 	esac
 
 	# Is it a non-zero number?
-	[[ "${__V}" =~ ^-?[1-9][0-9]*$ ]] && [ ${__V} -ne 0 ] && return 0
+	[[ "${__V}" =~ ^-?[1-9][0-9]*$ ]] && return 0
 
 	# Then this is certainly a false-value
 	return 1
@@ -783,8 +810,9 @@ is_array()
 #
 to_list()
 {
-	# This trick allows us to respect quotes
-	/usr/bin/xargs -n1 < <(echo -n "${@}")
+	# This trick allows us to respect quotes (printf, unlike
+	# echo, won't mistake items like "-n" or "-e" for options)
+	/usr/bin/xargs -n1 printf '%s\n' < <(echo -n "${@}")
 }
 
 #
@@ -939,10 +967,10 @@ set_as_boolean()
 is_nonempty()
 {
 	[ ${#} -eq 1 ] || return 1
-	local VAR="${1}"
-	[ -n "${VAR}" ] || return 2
-	[ -v "${VAR}" ] || return 3
-	[ -n "${!VAR}" ] || return 4
+	local __VAR="${1}"
+	[ -n "${__VAR}" ] || return 2
+	[ -v "${__VAR}" ] || return 3
+	[ -n "${!__VAR}" ] || return 4
 	return 0
 }
 
@@ -955,8 +983,9 @@ is_nonempty()
 # variable names are given, 0 is returned
 is_all_nonempty()
 {
-	for VAR in "${@}" ; do
-		is_nonempty "${VAR}" || return 1
+	local __VAR=""
+	for __VAR in "${@}" ; do
+		is_nonempty "${__VAR}" || return 1
 	done
 	return 0
 }
@@ -970,8 +999,9 @@ is_all_nonempty()
 # variable names are given, non-0 is returned
 is_any_nonempty()
 {
-	for VAR in "${@}" ; do
-		is_nonempty "${VAR}" && return 0
+	local __VAR=""
+	for __VAR in "${@}" ; do
+		is_nonempty "${__VAR}" && return 0
 	done
 	return 1
 }
@@ -1073,6 +1103,7 @@ secs_to_timestr()
 		(( __SECS -= ( __SIZE * __MUL ) ))
 	done
 
+	[ -n "${__RET}" ] || __RET="0S"
 	echo -n ${__RET,,}
 	return 0
 }
@@ -1128,7 +1159,13 @@ timestr_to_secs()
 is_valid_hostname()
 {
 	local __HOSTNAME="${1}"
+	[ ${#__HOSTNAME} -le 253 ] || return 1
 	[[ "${__HOSTNAME,,}" =~ ^([a-z0-9][-a-z0-9]*)?[a-z0-9]([.]([a-z0-9][-a-z0-9]*)?[a-z0-9])*$ ]] || return 1
+	local __PARTS=( ${__HOSTNAME//./ } )
+	local __P=""
+	for __P in "${__PARTS[@]}" ; do
+		[ ${#__P} -le 63 ] || return 1
+	done
 	return 0
 }
 
@@ -1141,6 +1178,7 @@ is_valid_hostname()
 is_valid_hostname_part()
 {
 	local __PART="${1}"
+	[ ${#__PART} -le 63 ] || return 1
 	[[ "${__PART,,}" =~ ^([a-z0-9][-a-z0-9]*)?[a-z0-9]$ ]] || return 1
 	return 0
 }
@@ -1154,7 +1192,7 @@ is_valid_hostname_part()
 is_valid_port()
 {
 	local __PORT="${1}"
-	[[ "${__PORT}" =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+	[[ "${__PORT}" =~ ^(0|[1-9][0-9]{0,4})$ ]] || return 1
 	[ ${__PORT} -gt 0 ] || return 1
 	[ ${__PORT} -lt 65536 ] || return 1
 	return 0
@@ -1169,23 +1207,19 @@ is_valid_port()
 is_valid_ipv4()
 {
 	local __IP="${1}"
-	local __PARTS=()
-	IFS="." __PARTS=(${__IP})
 
-	# Is it made of 4 parts separated by dots?
-	[ ${#__PARTS[@]} -eq 4 ] || return 1
+	# Is it made of 4 parts separated by dots, each a 1-3 digit number?
+	[[ "${__IP}" =~ ^[0-9]{1,3}([.][0-9]{1,3}){3}$ ]] || return 1
+
+	# Split at each dot
+	local __PARTS=( ${__IP//./ } )
 
 	local __P=""
 	for __P in "${__PARTS[@]}" ; do
-
-		# Is it a 1-3 digit number?
-		[[ "${__P}" =~ ^[0-9]{1,3}$ ]] || return 1
-
 		# Don't allow leading zeros
 		[[ "${__P}" =~ ^0[0-9]{1,2}$ ]] && return 1
 
 		# Is it in [0..255]?
-		[ ${__P} -ge 0 ] || return 1
 		[ ${__P} -le 255 ] || return 1
 	done
 
@@ -1207,6 +1241,7 @@ render_password()
 	[[ "${__LENGTH}" =~ ^[1-9][0-9]*$ ]] || __LENGTH=32
 
 	local __V=""
+	local __REST=""
 	read __V __REST < <(tr -dc '[:alnum:]' < /dev/urandom | fold -w ${__LENGTH} | head -1)
 	echo -n "${__V}"
 }
@@ -1233,7 +1268,7 @@ ini_has_section()
 	local __FILE="${1}"
 	local __SECTION="${2}"
 	[ -n "${__SECTION}" ] || return 1
-	ini_list_sections "${__FILE}" | grep -q "${__SECTION}"
+	ini_list_sections "${__FILE}" | grep -qxF -- "${__SECTION}"
 }
 
 #
@@ -1254,8 +1289,28 @@ ini_get_value()
 	[ -n "${__KEY}" ] || return 1
 	ini_has_section "${__FILE}" "${__SECTION}" || return 1
 
-	local __KVP="$(sed -nr "/^\s*\[${__SECTION}\]/,/\[/{/^\s*${__KEY}\s*=/p}" "${__FILE}" | tail -1)"
-	echo -n "${__KVP#*=}" | sed -e 's;^[[:space:]]*;;g' -e 's;[[:space:]]*$;;g'
+	# The section and key are compared as literal strings (passed via the
+	# environment, since awk -v would process backslash escapes in them),
+	# and the section ends at the next section header. The last value wins.
+	__INI_SECTION="${__SECTION}" __INI_KEY="${__KEY}" awk '
+		/^[[:space:]]*\[/ {
+			s = $0
+			sub(/^[[:space:]]*\[/, "", s)
+			sub(/\].*$/, "", s)
+			inside = (s == ENVIRON["__INI_SECTION"])
+			next
+		}
+		inside {
+			eq = index($0, "=")
+			if (!eq) next
+			k = substr($0, 1, eq - 1)
+			gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+			if (k != ENVIRON["__INI_KEY"]) next
+			value = substr($0, eq + 1)
+			gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+		}
+		END { printf "%s", value }
+	' "${__FILE}"
 }
 
 #
@@ -1265,6 +1320,9 @@ ini_get_value()
 #
 urlencode()
 {
+	# Work on bytes, not characters, so multi-byte (i.e. UTF-8)
+	# characters get encoded byte-by-byte, as per RFC 3986
+	local LC_ALL=C
 	local __STR="${1}"
 	local __LEN=${#__STR}
 
@@ -1322,6 +1380,8 @@ urlencode_query()
 urldecode()
 {
 	local __STR="${1//+/ }"
+	# Escape any backslashes so only the %XX sequences get decoded
+	__STR="${__STR//\\/\\\\}"
 	printf "%b" "${__STR//%/\\x}"
 }
 
@@ -1394,19 +1454,21 @@ sanitize_pathspec()
 {
 	local __LP="${1}"
 	local __SEP="${2:-:}"
-	local __L="$(tr "${__SEP}" '\n' <<< "${__LP}" | sort -u | sed -e '/^\s*$/d')"
+	local -A __SEEN=()
 	local __A=()
-	IFS=":" read -a __A <<< "${__LP}" || true
-	local __FIRST="true"
+	local __RESULT=""
 	local __n=""
+
+	# Split on the separator (as a literal string, not a pattern)
+	readarray -t __A < <(printf '%s' "${__LP//"${__SEP}"/$'\n'}")
 	for __n in "${__A[@]}" ; do
-		grep -q "^${__n}$" <<< "${__L}" || continue
-		[ -n "${__n}" ] || continue
-		${__FIRST} || echo -n "${__SEP}"
-		echo -n "${__n}"
-		__L="$(grep -v "^${__n}$" <<< "${__L}")"
-		__FIRST="false"
+		# Skip blank elements, and the ones we've already seen
+		[[ "${__n}" =~ ^[[:space:]]*$ ]] && continue
+		[ -n "${__SEEN["${__n}"]+x}" ] && continue
+		__SEEN["${__n}"]=1
+		__RESULT+="${__RESULT:+${__SEP}}${__n}"
 	done
+	echo -n "${__RESULT}"
 }
 
 #
@@ -1438,8 +1500,8 @@ read_setting()
 		fi
 	fi
 
-	# Return the final value
-	echo -en "${__RESULT}"
+	# Return the final value, verbatim
+	printf '%s' "${__RESULT}"
 	return 0
 }
 
@@ -1454,8 +1516,10 @@ redirect_logs()
 	local __LOG="${1}"
 	local __DIR="$(dirname "${__LOG}")"
 
-	if ! is_dir_readwrite "${__DIR}" ; then
-		warn "Could not redirect the logs to [${__LOG}]: $(dir_error "${__DIR}" "${?}")"
+	local __RC=0
+	is_dir_readwrite "${__DIR}" || __RC=${?}
+	if [ ${__RC} -ne 0 ] ; then
+		warn "Could not redirect the logs to [${__LOG}]: $(__dir_error_msg "${__DIR}" "${__RC}")"
 		return 0
 	fi
 
@@ -1603,9 +1667,12 @@ auth_params()
 			;;
 	esac
 
-	cat <<-EOF
-	user "${USER}:${PASS}"
-	EOF
+	# Within a quoted curl config value, backslashes and double
+	# quotes must be escaped (backslashes first!)
+	local CREDS="${USER}:${PASS}"
+	CREDS="${CREDS//\\/\\\\}"
+	CREDS="${CREDS//\"/\\\"}"
+	printf 'user "%s"\n' "${CREDS}"
 }
 
 #
@@ -1627,7 +1694,7 @@ execute_unless()
 	# Show the command about to be executed
 	#
 	running "${*@Q}"
-	if as_boolean "${!__VAR}" ; then
+	if as_boolean "${!__VAR:-}" ; then
 		warn "${__VAR} is set to true, Skipping the command execution"
 		return 0
 	fi
@@ -1667,7 +1734,7 @@ is_fips()
 }
 
 #
-# usage: is_fips_bool
+# usage: is_fips_boolean
 #
 # Outputs "true" if FIPS is ENABLED, "false" if it's DISABLED. It's
 # the logical negation of is_not_fips_boolean
@@ -1680,7 +1747,7 @@ is_fips_boolean()
 }
 
 #
-# usage: is_not_fips_bool
+# usage: is_not_fips_boolean
 #
 # Outputs "true" if FIPS is DISABLED, "false" if it's ENABLED. It's
 # the logical negation of is_fips_boolean
@@ -1705,7 +1772,7 @@ set_godebug_fips140()
 		ok "FIPS is available!"
 		FIPS_MODE="${DEFAULT_GOLANG_FIPS_MODE:-"on"}"
 	else
-		err "FIPS is not available"
+		warn "FIPS is not available"
 	fi
 
 	# Allow for customizing the value set for GODEBUG
@@ -1725,6 +1792,7 @@ set_godebug_fips140()
 	# Start with a new value
 	local NEW=""
 	# Add all the previous values
+	local V=""
 	for V in "${ARR[@]}" ; do
 		NEW+="${NEW:+,}${V}"
 	done
@@ -1744,6 +1812,8 @@ set_godebug_fips140()
 get_namespace()
 {
 	# If we don't know our namespace, we figure it out
+	local NS=""
+	local V=""
 	for NS in KUBERNETES POD ; do
 		V="${NS}_NAMESPACE"
 		[ -v "${V}" ] || continue
@@ -1770,7 +1840,6 @@ get_cluster_domain()
 
 	# Let's see what we can do
 	local HN="$(hostname -f)"
-	local CLUSTER_DOMAIN=""
 	[[ "${HN}" =~ ^.*[.]${NAMESPACE}[.]svc[.](.*)$ ]] && echo -n "${BASH_REMATCH[1]}"
 	return 0
 }
@@ -1778,8 +1847,7 @@ get_cluster_domain()
 #
 # usage: run_and_capture cmd [args ...]
 #
-# Run the command, capture its STDOUT into the variable named "${OUT}",
-# its STDERR into the variable named "${ERR}", and return its exit status.
+# Run the command, capture its STDOUT and STDERR, and return its exit status.
 #
 # It will output a JSON structure with the captured "stdout" and "stderr"
 # values

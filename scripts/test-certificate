@@ -31,7 +31,7 @@ eyes "Validating the files ..."
 for VAR in "${BASE_VARS[@]}" ; do
 	[ -v "${VAR}" ] || fail "The variable [${VAR}] is not defined!"
 	FILE="${!VAR}"
-	[ -n "${VAR}" ] || fail "The value for [${VAR}] is empty!"
+	[ -n "${FILE}" ] || fail "The value for [${VAR}] is empty!"
 	require_file_readable "${FILE}"
 	[ -s "${FILE}" ] || fail "The file [${FILE}] is of length 0"
 done
@@ -39,7 +39,8 @@ done
 #
 # Verify certificate signatures!
 #
-if is_file_readable "${SSL_CA_INT}" ; then
+# The intermediate CA is optional
+if is_file_readable "${SSL_CA_INT:-}" ; then
 	OUT="$(openssl verify -no-CAstore -no-CApath -CAfile "${SSL_CA_ROOT}" "${SSL_CA_INT}" 2>&1)" || fail "The intermediate CA is not signed by the root CA (rc=${?}): ${OUT}"
 fi
 OUT="$(openssl verify -no-CAstore -no-CApath -CAfile "${SSL_CA_CHAIN}" "${SSL_CERTIFICATE}" 2>&1)" || fail "The certificate isn't signed by the CA Chain at [${SSL_CA_CHAIN}] (rc=${?}): ${OUT}"

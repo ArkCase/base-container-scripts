@@ -118,7 +118,9 @@ xml_value()
 
 cleanup()
 {
+	local RC=${?}
 	[ -v WORKDIR ] && is_dir "${WORKDIR}" && rm -rf "${WORKDIR}" &>/dev/null
+	return ${RC}
 }
 
 usage()

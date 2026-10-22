@@ -2,17 +2,22 @@
 #
 # usage: aes-crypt (encrypt|decrypt) [KEY_VARIABLE_NAME [SALT_STRING]]
 #
-# Encrypts (or decrypts) STDIN into STDOUT using AES-256-CBC, with the output
-# (or input) encoded as single-line base64. The key is derived via PBKDF2
-# (HMAC-SHA256) from the password held in the environment variable named
-# KEY_VARIABLE_NAME (default: ENCRYPTION_KEY). If KEY_VARIABLE_NAME is given,
-# that variable must be set (it may be empty). If its value is empty (or
+# Encrypts (or decrypts) STDIN into STDOUT using AES-256-GCM. The key is derived
+# via PBKDF2 (HMAC-SHA256) from the password held in the environment variable
+# named KEY_VARIABLE_NAME (default: ENCRYPTION_KEY). If KEY_VARIABLE_NAME is
+# given, that variable must be set (it may be empty). If its value is empty (or
 # ENCRYPTION_KEY is unset), DEFAULT_${KEY_VARIABLE_NAME} is used instead. If
 # there's still no password, the data is passed through unmodified.
 #
-# The salt and IV are derived from SALT_STRING (default: ENCRYPTED_VALUE),
-# and the number of PBKDF2 iterations is taken from AES_PBKDF2_ITER (default:
-# 10000). The same values must be used to decrypt what was encrypted.
+# Values are encrypted with a random salt and nonce, which are stored as part
+# of the encrypted value along with the authentication tag, as follows:
+#
+#     aes:base64(salt):base64(nonce):base64(encrypted data):base64(tag)
+#
+# Values in the legacy format (only base64(encrypted data), with AES-256-CBC)
+# can still be decrypted: their salt and IV are derived from SALT_STRING
+# (default: ENCRYPTED_VALUE), with 10000 PBKDF2 iterations, as the original
+# script did.
 #
 # The password and derived key are never placed on any command line. All
 # cryptography is performed by the system's OpenSSL library (hashlib uses it
@@ -28,10 +33,21 @@ import sys
 
 DEFAULT_KEY_VAR = "ENCRYPTION_KEY"
 DEFAULT_SALT = "ENCRYPTED_VALUE"
-DEFAULT_ITERATIONS = 10000
-ITERATIONS_VAR = "AES_PBKDF2_ITER"
+# OWASP's minimum recommendation for PBKDF2-HMAC-SHA256 (600,000), plus 50%
+ITERATIONS = 900000
+LEGACY_ITERATIONS = 10000
 KEY_SIZE = 32
+SALT_SIZE = 16
+NONCE_SIZE = 12
+TAG_SIZE = 16
 BLOCK_SIZE = 16
+
+EVP_CTRL_AEAD_GET_TAG = 0x10
+EVP_CTRL_AEAD_SET_TAG = 0x11
+
+# aes:base64(salt):base64(nonce):base64(encrypted data):base64(tag)
+B64 = "[A-Za-z0-9+/]+={0,2}"
+VALUE_FORMAT = re.compile(f"^aes:({B64}):({B64}):((?:{B64})?):({B64})$")
 
 def fail(msg):
 	print(f"❌ {msg}", file=sys.stderr)
@@ -46,41 +62,72 @@ def get_password(key_var):
 		password = os.environb.get(f"DEFAULT_{key_var}".encode(), b"")
 	return password
 
-def get_iterations():
-	value = os.environ.get(ITERATIONS_VAR, "")
-	if not value:
-		return DEFAULT_ITERATIONS
-	if not re.match("^[1-9][0-9]*$", value):
-		fail(f"Invalid {ITERATIONS_VAR} value [{value}]")
-	return int(value)
+def b64decode(value):
+	try:
+		return base64.b64decode(value, validate=True)
+	except ValueError:
+		fail("bad decrypt")
 
-def aes_256_cbc(encrypt, key, iv, data):
+def b64encode(value):
+	return base64.b64encode(value).decode()
+
+def libcrypto():
 	# hashlib has already loaded the system's libcrypto, so this is the same library
 	lib = ctypes.CDLL("libcrypto.so.3")
+	lib.RAND_bytes.argtypes = [ctypes.c_char_p, ctypes.c_int]
 	lib.EVP_CIPHER_fetch.restype = ctypes.c_void_p
 	lib.EVP_CIPHER_fetch.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
 	lib.EVP_CIPHER_free.argtypes = [ctypes.c_void_p]
 	lib.EVP_CIPHER_CTX_new.restype = ctypes.c_void_p
 	lib.EVP_CIPHER_CTX_free.argtypes = [ctypes.c_void_p]
+	lib.EVP_CIPHER_CTX_ctrl.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+	lib.EVP_CIPHER_CTX_get_updated_iv.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]
 	lib.EVP_CipherInit_ex2.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_void_p]
 	lib.EVP_CipherUpdate.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_int), ctypes.c_char_p, ctypes.c_int]
 	lib.EVP_CipherFinal_ex.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_int)]
+	return lib
 
-	cipher = lib.EVP_CIPHER_fetch(None, b"AES-256-CBC", None)
+def random_bytes(size):
+	# Use OpenSSL's DRBG, so it's subject to the FIPS provider as well
+	buf = ctypes.create_string_buffer(size)
+	if libcrypto().RAND_bytes(buf, size) != 1:
+		fail("Failed to generate random bytes")
+	return buf.raw
+
+#
+# Run the named cipher over the data, and return the (output, iv, tag) tuple.
+# For GCM encryption, no IV must be given: OpenSSL generates a random one (as
+# FIPS requires), and it's returned along with the tag. For GCM decryption,
+# the tag must be given.
+#
+def run_cipher(name, encrypt, key, iv, data, tag=None):
+	lib = libcrypto()
+	cipher = lib.EVP_CIPHER_fetch(None, name.encode(), None)
 	if not cipher:
-		fail("The AES-256-CBC cipher is not available from OpenSSL")
+		fail(f"The {name} cipher is not available from OpenSSL")
 	ctx = lib.EVP_CIPHER_CTX_new()
+	error = "bad encrypt" if encrypt else "bad decrypt"
 	try:
 		if not ctx or lib.EVP_CipherInit_ex2(ctx, cipher, key, iv, 1 if encrypt else 0, None) != 1:
-			fail("Failed to initialize the AES-256-CBC cipher")
+			fail(f"Failed to initialize the {name} cipher")
 		out = ctypes.create_string_buffer(len(data) + BLOCK_SIZE)
 		outl = ctypes.c_int(0)
 		if lib.EVP_CipherUpdate(ctx, out, ctypes.byref(outl), data, len(data)) != 1:
-			fail("bad encrypt" if encrypt else "bad decrypt")
+			fail(error)
 		result = out.raw[:outl.value]
+		if (tag is not None) and lib.EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, len(tag), tag) != 1:
+			fail(error)
+		# For GCM decryption, this is where the tag is verified
 		if lib.EVP_CipherFinal_ex(ctx, out, ctypes.byref(outl)) != 1:
-			fail("bad encrypt" if encrypt else "bad decrypt")
-		return result + out.raw[:outl.value]
+			fail(error)
+		result += out.raw[:outl.value]
+		if encrypt and (iv is None):
+			tag = ctypes.create_string_buffer(TAG_SIZE)
+			iv = ctypes.create_string_buffer(NONCE_SIZE)
+			if (lib.EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, TAG_SIZE, tag) != 1) or (lib.EVP_CIPHER_CTX_get_updated_iv(ctx, iv, NONCE_SIZE) != 1):
+				fail(error)
+			return (result, iv.raw, tag.raw)
+		return (result, iv, tag)
 	finally:
 		lib.EVP_CIPHER_CTX_free(ctx)
 		lib.EVP_CIPHER_free(cipher)
@@ -107,21 +154,31 @@ def main():
 		sys.stdout.buffer.write(sys.stdin.buffer.read())
 		return
 
-	# The first half of the digest is the salt, the second half is the IV
-	digest = hashlib.sha256(os.fsencode(salt_string) + b"\n").digest()
-	salt = digest[:16]
-	iv = digest[16:]
-	key = hashlib.pbkdf2_hmac("sha256", password, salt, get_iterations(), KEY_SIZE)
-
 	data = sys.stdin.buffer.read()
 	if encrypt:
-		sys.stdout.write(base64.b64encode(aes_256_cbc(True, key, iv, data)).decode())
-	else:
-		try:
-			data = base64.b64decode(data.strip(), validate=True)
-		except ValueError:
+		salt = random_bytes(SALT_SIZE)
+		key = hashlib.pbkdf2_hmac("sha256", password, salt, ITERATIONS, KEY_SIZE)
+		encrypted, nonce, tag = run_cipher("AES-256-GCM", True, key, None, data)
+		sys.stdout.write(f"aes:{b64encode(salt)}:{b64encode(nonce)}:{b64encode(encrypted)}:{b64encode(tag)}")
+		return
+
+	data = data.strip().decode("ascii", errors="replace")
+	m = VALUE_FORMAT.match(data)
+	if m:
+		salt = b64decode(m.group(1))
+		nonce = b64decode(m.group(2))
+		encrypted = b64decode(m.group(3))
+		tag = b64decode(m.group(4))
+		if len(salt) != SALT_SIZE or len(nonce) != NONCE_SIZE or len(tag) != TAG_SIZE:
 			fail("bad decrypt")
-		sys.stdout.buffer.write(aes_256_cbc(False, key, iv, data))
+		key = hashlib.pbkdf2_hmac("sha256", password, salt, ITERATIONS, KEY_SIZE)
+		decrypted, nonce, tag = run_cipher("AES-256-GCM", False, key, nonce, encrypted, tag)
+	else:
+		# Legacy format: the first half of the digest is the salt, the second half is the IV
+		digest = hashlib.sha256(os.fsencode(salt_string) + b"\n").digest()
+		key = hashlib.pbkdf2_hmac("sha256", password, digest[:16], LEGACY_ITERATIONS, KEY_SIZE)
+		decrypted, iv, tag = run_cipher("AES-256-CBC", False, key, digest[16:], b64decode(data))
+	sys.stdout.buffer.write(decrypted)
 
 if __name__ == "__main__":
 	main()

@@ -53,7 +53,11 @@ MODE_DECRYPT = "decrypt"
 FILE_SECURITY = "settings-security.xml"
 FILE_SETTINGS = "settings.xml"
 
-M2_NAMESPACE = "http://maven.apache.org/SETTINGS/1.0.0"
+#
+# Raised when a required file isn't there, which --quiet ignores
+#
+class MissingFile(Exception):
+	pass
 
 #
 # Used to decorate (and un-decorate) strings
@@ -279,7 +283,7 @@ def readMasterPassword(securityFile):
 	settingsSecurity = ET.parse(securityFile)
 	if not settingsSecurity:
 		return None
-	master = settingsSecurity.findall("master")
+	master = settingsSecurity.findall("{*}master")
 	if not master:
 		return None
 	return master[0].text
@@ -288,18 +292,18 @@ def readServerValue(settingsFile, serverId, valueName):
 	if not settingsFile:
 		return None
 
-	ns = { "s": M2_NAMESPACE }
-	settings = ET.parse(settingsFile, )
-
-	pred = f"./s:servers/s:server[s:id = \"{serverId}\"]/s:{valueName}"
-	for value in settings.findall(pred, ns):
-		return value.text
+	# Match the elements in any namespace (or none), since settings.xml
+	# may use any of the schema versions' namespaces, or none at all
+	settings = ET.parse(settingsFile)
+	for server in settings.iterfind("./{*}servers/{*}server"):
+		if server.findtext("{*}id") == serverId:
+			return server.findtext(f"{{*}}{valueName}")
 
 	return None
 
 def decryptMasterPassword(securityFile):
 	if not securityFile:
-		raise Exception("No security file found to read the master password from")
+		raise MissingFile("No security file found to read the master password from")
 	masterPass = readMasterPassword(securityFile)
 	if masterPass is None:
 		raise Exception("No master password is set")
@@ -307,9 +311,9 @@ def decryptMasterPassword(securityFile):
 
 def __main__():
 	parser = argparse.ArgumentParser(description = "Decrypt Maven Passwords")
-	parser.add_argument("-l", "--location", metavar=".m2-location", action="store", help="The location to use as the directory where the Maven settings files are housed (normally $HOME/.m2)", nargs=1)
-	parser.add_argument("-s", "--settings", metavar="settings.xml", action="store", help="The XML file to use as the settings.xml file instead of the default", nargs=1)
-	parser.add_argument("-S", "--security", metavar="settings-security.xml", action="store", help="The XML file to use as the settings-security.xml file instead of the default", nargs=1)
+	parser.add_argument("-l", "--location", metavar=".m2-location", action="store", help="The location to use as the directory where the Maven settings files are housed (normally $HOME/.m2)")
+	parser.add_argument("-s", "--settings", metavar="settings.xml", action="store", help="The XML file to use as the settings.xml file instead of the default")
+	parser.add_argument("-S", "--security", metavar="settings-security.xml", action="store", help="The XML file to use as the settings-security.xml file instead of the default")
 	parser.add_argument("-q", "--quiet", action="store_true", help="Disable errors when files aren't found, and just return empty values")
 
 	commands = parser.add_subparsers(help="Command Help", dest="mode")
@@ -380,7 +384,7 @@ def __main__():
 	try:
 		if security:
 			if not os.path.exists(security):
-				raise Exception(f"Security file not found at [{security}]")
+				raise MissingFile(f"Security file not found at [{security}]")
 			if not os.path.isfile(security):
 				raise Exception(f"Path [{security}] is not a regular file")
 			security = os.path.realpath(security)
@@ -389,7 +393,7 @@ def __main__():
 		if settings:
 			settings = settings
 			if not os.path.exists(settings):
-				raise Exception(f"Settings file not found at [{settings}]")
+				raise MissingFile(f"Settings file not found at [{settings}]")
 			if not os.path.isfile(settings):
 				raise Exception(f"Path [{settings}] is not a regular file")
 			settings = os.path.realpath(settings)
@@ -412,7 +416,7 @@ def __main__():
 
 		if args.mode == MODE_SERVER:
 			if (not settings) or (not security):
-				raise Exception("To decrypt server values the settings.xml and settings-security.xml files must both exist")
+				raise MissingFile("To decrypt server values the settings.xml and settings-security.xml files must both exist")
 			masterPass = decryptMasterPassword(security)
 			if not masterPass:
 				raise Exception("No master password was decoded, cannot continue!")
@@ -431,7 +435,8 @@ def __main__():
 
 		parser.print_help(sys.stderr)
 		sys.exit(1)
-	except Exception as e:
+	except MissingFile as e:
+		# Only missing files are ignored, any other failure is still an error
 		if args.quiet:
 			return True
 		raise e
@@ -445,5 +450,5 @@ if __name__ == "__main__":
 			exit(0)
 		exit(1)
 	except Exception as e:
-		print(f"{e}")
+		print(f"{e}", file=sys.stderr)
 		exit(1)

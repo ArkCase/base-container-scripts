@@ -1,34 +1,172 @@
 #!/usr/bin/python3
 
+#
+# usage: xmlenvsubst < template.xml > output.xml
+#
+# Replaces $NAME and ${NAME} with the values of the corresponding environment
+# variables in attribute values, text, and CDATA sections, leaving everything
+# else (elements, namespace prefixes and declarations, comments, processing
+# instructions, the DOCTYPE) as it was. $$ is a literal $, and references to
+# unset variables are left untouched. The output is encoded as UTF-8.
+#
+# The values are XML-escaped where they're inserted (including newlines, CRs,
+# and tabs), so they can't alter the document's structure. Within CDATA
+# sections (where escaping isn't possible) they're inserted verbatim, so a
+# value that contains "]]>" or a CR can't be used there, and is an error.
+#
+
 import os
+import re
 import sys
 import traceback
-import xml.etree.ElementTree as ET
+import xml.dom.minidom
 
-DEFAULT_ENCODING = "UTF-8"
+# $$ is a literal $, while $NAME and ${NAME} are replaced with the variable's value.
+# As with os.path.expandvars(), references to unset variables are left untouched.
+VARIABLE = re.compile(r"\$(?:(\$)|(\w+)|\{([^}]*)\})", re.ASCII)
+
+# Characters that can't be represented in XML 1.0, not even as character references
+INVALID = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+
+# The (text, variable name) parts of the text nodes that had substitutions (the
+# name is None for the template's own text)
+PARTS = {}
 
 def error(*args, **kwargs):
 	print(*args, file=sys.stderr, **kwargs)
 
 def fail(*args, **kwargs):
 	error(*args, **kwargs)
-	sys.exit(1) 
+	sys.exit(1)
+
+#
+# Return the list of (text, variable name) parts that result from the substitution
+#
+def expandvars(value):
+	parts = []
+	pos = 0
+	for m in VARIABLE.finditer(value):
+		if m.group(1):
+			parts.append((value[pos:m.start()] + "$", None))
+		else:
+			name = m.group(2) or m.group(3)
+			v = os.environ.get(name)
+			if v is None:
+				parts.append((value[pos:m.end()], None))
+			else:
+				if INVALID.search(v):
+					fail(f"The value of the environment variable [{name}] contains characters that can't be represented in XML")
+				parts.append((value[pos:m.start()], None))
+				parts.append((v, name))
+		pos = m.end()
+	parts.append((value[pos:], None))
+	# Empty values are kept, so it's known that a substitution happened
+	return [ (text, name) for text, name in parts if text or name ]
+
+def expand_node(node):
+	parts = expandvars(node.data)
+	node.data = "".join(text for text, name in parts)
+	if node.nodeType == node.CDATA_SECTION_NODE:
+		# CDATA can't be escaped (nor split, since some readers only take the first
+		# section), so its contents must be representable as they are
+		names = [ name for text, name in parts if name ]
+		if ("]]>" in node.data) or any(("\r" in text) for text, name in parts if name):
+			fail(f"The values of the environment variables {names} can't be inserted into a CDATA section verbatim, since they'd produce \"]]>\" or contain a CR")
+	elif any(name for text, name in parts):
+		PARTS[node] = parts
+
+def escape_text(value):
+	# A literal CR would be turned into an LF when parsed again
+	return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\r", "&#13;")
+
+def escape_value(value):
+	# Literal whitespace characters would be normalized into spaces when parsed again
+	# (in attributes), so they're always escaped in values
+	return escape_text(value).replace("\"", "&quot;").replace("\t", "&#9;").replace("\n", "&#10;")
+
+def write_text(node, out):
+	for text, name in PARTS.get(node, [ (node.data, None) ]):
+		out.append(escape_value(text) if name else escape_text(text))
+
+#
+# Serialize the node without recursion (documents may be deeply nested), with
+# escaping that's correct regardless of the Python version
+#
+def serialize(node, out):
+	pending = [ node ]
+	while pending:
+		n = pending.pop()
+		if isinstance(n, str):
+			# The closing tag for an element
+			out.append(n)
+		elif n.nodeType == n.ELEMENT_NODE:
+			out.append("<" + n.tagName)
+			for name, value in n.attributes.items():
+				# An empty namespace declaration (xmlns="") has no value
+				out.append(f" {name}=\"{escape_value(value or '')}\"")
+			if not n.childNodes:
+				out.append("/>")
+				continue
+			out.append(">")
+			pending.append(f"</{n.tagName}>")
+			pending.extend(reversed(n.childNodes))
+		elif n.nodeType == n.TEXT_NODE:
+			write_text(n, out)
+		elif n.nodeType == n.CDATA_SECTION_NODE:
+			out.append(f"<![CDATA[{n.data}]]>")
+		else:
+			# Comments, processing instructions, and the DOCTYPE are copied as-is
+			out.append(n.toxml())
 
 try:
-	tree = ET.parse(sys.stdin)
-	root = tree.getroot()
+	data = sys.stdin.buffer.read()
 
-	# First things first: do the replacements on both
-	# attributes and values. The XML framework should
-	# take care of all necessary escaping/quoting/etc.
-	for e in root.iter():
-		for key in e.attrib:
-			e.attrib[key] = os.path.expandvars(e.attrib[key])
-		if e.text:
-			e.text = os.path.expandvars(e.text)
+	# The DOM keeps namespace prefixes and declarations as written, as well
+	# as comments, processing instructions, and the DOCTYPE
+	doc = xml.dom.minidom.parseString(data)
 
-	# Now output the new file (comments and directives are lost)
-	print(ET.canonicalize(ET.tostring(root)))
+	# Do the replacements on both attributes and text (including the text
+	# that follows child elements)
+	pending = [ doc.documentElement ]
+	while pending:
+		e = pending.pop()
+		for attr in e.attributes.values():
+			# Namespace declarations aren't values
+			if attr.name == "xmlns" or attr.name.startswith("xmlns:"):
+				continue
+			attr.value = "".join(text for text, name in expandvars(attr.value))
+		text = None
+		for child in list(e.childNodes):
+			if child.nodeType == child.TEXT_NODE:
+				# The parser splits text around entity references, so join it back
+				# up (like normalize() does, but that one recurses too deeply)
+				if text is not None:
+					text.data += child.data
+					e.removeChild(child)
+					continue
+				text = child
+				continue
+			text = None
+			if child.nodeType == child.CDATA_SECTION_NODE:
+				expand_node(child)
+			elif child.nodeType == child.ELEMENT_NODE:
+				pending.append(child)
+		for child in e.childNodes:
+			if child.nodeType == child.TEXT_NODE:
+				expand_node(child)
+
+	# Now output the new document. If the original had an XML declaration, keep
+	# it, but with the encoding we're actually using
+	out = []
+	if doc.version:
+		standalone = ""
+		if doc.standalone is not None:
+			standalone = " standalone=\"yes\"" if doc.standalone else " standalone=\"no\""
+		out.append(f"<?xml version=\"{doc.version}\" encoding=\"UTF-8\"{standalone}?>\n")
+	for node in doc.childNodes:
+		serialize(node, out)
+		out.append("\n")
+	sys.stdout.buffer.write("".join(out).encode("UTF-8"))
 	sys.exit(0)
 except Exception as e:
 	exc_type, exc_value, exc_traceback = sys.exc_info()

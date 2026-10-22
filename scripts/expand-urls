@@ -107,23 +107,31 @@ parts = {
 #
 def parse_url(name, value):
 	if name.startswith(PREFIX) and name.endswith(SUFFIX):
-		# Invalid URLs (i.e. bad ports or IPv6 addresses) are skipped,
-		# so they don't prevent the rest of the URLs from being processed
-		try:
-			url = urllib.parse.urlparse(value)
-			url.port
-			return url
-		except ValueError as e:
-			print(f"WARNING: ignoring the invalid URL in {name}: {e}", file=sys.stderr)
+		url = urllib.parse.urlparse(value)
+		# The port is parsed lazily, so access it to validate it
+		url.port
+		return url
 	return None
+
+#
+# Invalid URLs are configuration errors: they're all collected
+# and reported at the end, and then we exit with an error
+#
+failures = []
 
 #
 # Ok... now iterate over all envvars, and process
 # them all, knowing that the parse_url() function
-# will only process the ones we're interested in
+# will only process the ones we're interested in.
+# The output is only rendered if there are no errors.
 #
+output = []
 for name, value in os.environ.items():
-	url = parse_url(name, value)
+	try:
+		url = parse_url(name, value)
+	except ValueError as e:
+		failures.append((name, value, e))
+		continue
 	if not url:
 		continue
 
@@ -149,4 +157,13 @@ for name, value in os.environ.items():
 		# Spit out stuff that can be eval'd by the shell
 		#
 		partValue = str(partValue).replace("'", "'\\''")
-		print(f"export {name}_{suffix.upper()}='{partValue}';")
+		output.append(f"export {name}_{suffix.upper()}='{partValue}';")
+
+if failures:
+	print(f"ERROR: found {len(failures)} invalid URL(s):", file=sys.stderr)
+	for name, value, e in sorted(failures, key=lambda f: f[0]):
+		print(f"\t{name} = [{value}]: {e}", file=sys.stderr)
+	sys.exit(1)
+
+for line in output:
+	print(line)

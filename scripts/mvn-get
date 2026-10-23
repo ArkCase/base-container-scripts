@@ -165,7 +165,7 @@ CLASSIFIER="${BASH_REMATCH[8]}"
 
 [ -n "${VERSION}" ] || VERSION="RELEASE"
 
-require_exe xmlstarlet xmllint curl
+require_exe xmlstarlet xmllint curl sha1sum
 
 # The credentials (and the key that decrypts them) are only for our own use, so
 # keep them out of the environment of every child process (curl, render-helpers, etc.)
@@ -319,6 +319,31 @@ doing "Final URL:     [${URL}]"
 # Download into the work directory first, so a failed download can't clobber an existing file
 DOWNLOADED="${WORKDIR}/${FILENAME}"
 download "${URL}" "${AUTH}" "${DOWNLOADED}" || fail "Failed to complete the download (rc=${?})"
+
+set_as_boolean MVN_GET_REQUIRE_CHECKSUM "true"
+
+if as_boolean "${MVN_GET_REQUIRE_CHECKSUM}" ; then
+	# Validate the download against the checksum the repository publishes next to it.
+	CHECKSUM_URL="${URL}.sha1"
+	CHECKSUM="${DOWNLOADED}.sha1"
+	RC=0
+	OUT="$(download "${CHECKSUM_URL}" "${AUTH}" "${CHECKSUM}" 2>&1)" || RC=${?}
+	eyes "Validating the artifact's checksum"
+	if [ ${RC} -eq 0 ] ; then
+		# The file may hold just the hash, or the hash followed by the filename (as per sha1sum)
+		read -r EXPECTED REST < "${CHECKSUM}" || true
+		EXPECTED="${EXPECTED,,}"
+		[[ "${EXPECTED}" =~ ^[0-9a-f]{40}$ ]] || fail "The SHA1 checksum downloaded from [${CHECKSUM_URL}] is not valid: [${EXPECTED}]"
+		ACTUAL="$(sha1sum "${DOWNLOADED}" | awk '{ print $1 }')" || fail "Failed to compute the SHA1 checksum for the downloaded file (rc=${?})"
+		[ "${ACTUAL}" == "${EXPECTED}" ] || fail "The SHA1 checksum for the downloaded file doesn't match the one from [${CHECKSUM_URL}]:\n\tExpected: [${EXPECTED}]\n\tActual:   [${ACTUAL}]"
+	elif [ ${RC} -eq 22 ] ; then
+		# The server answered with an HTTP error, which most likely means there's no checksum
+		warn "No SHA1 checksum could be downloaded from [${CHECKSUM_URL}], so the download can't be validated"
+	else
+		fail "Failed to download the SHA1 checksum from [${CHECKSUM_URL}] (rc=${RC}):\n${OUT}"
+	fi
+fi
+
 mv -f "${DOWNLOADED}" "${DEST}" || fail "Failed to move the downloaded file into [${DEST}] (rc=${?})"
 ok "Download successful!"
 type -P render-helpers &>/dev/null || exit 0

@@ -72,7 +72,13 @@ say()
 
 ansi()
 {
-	printf "\033[%sm" "${1:-0}"
+	local V=""
+	for C in "${@}" ; do
+		[ -n "${V}" ] && V+=";"
+		# TODO: resolve in table :)
+		V+="${C}"
+	done
+	printf "\e[%sm" "${V:-0}"
 }
 
 ansi_reset()
@@ -86,19 +92,29 @@ ansi_reset()
 
 __bold__="$(ansi 1)"
 __underline__="$(ansi 4)"
-__reset__="$(ansi_reset)"
+__reset__="$(ansi)"
 
-__red__="$(ansi 31)"
-__green__="$(ansi 32)"
-__white__="$(ansi 37)"
-__tan__="$(ansi 33)"
-__blue__="$(ansi 34)"
 __gray__="$(ansi 90)"
+__red__="$(ansi 91)"
+__green__="$(ansi 92)"
+__yellow__="$(ansi 93)"
+__blue__="$(ansi 94)"
+__magenta__="$(ansi 95)"
+__cyan__="$(ansi 96)"
+__white__="$(ansi 97)"
 
 # Honor the NO_COLOR convention (https://no-color.org)
 if [ -n "${NO_COLOR:-}" ] ; then
-	__bold__="" ; __underline__="" ; __reset__=""
-	__red__="" ; __green__="" ; __white__="" ; __tan__="" ; __blue__="" ; __gray__=""
+	__bold__=""
+	__underline__=""
+	__reset__=""
+
+	__red__=""
+	__green__=""
+	__white__=""
+	__yellow__=""
+	__blue__=""
+	__gray__=""
 fi
 
 #
@@ -136,7 +152,7 @@ err()
 
 warn()
 {
-	say "${__tan__}⚠️  ${*}${__reset__}"
+	say "${__yellow__}⚠️  ${*}${__reset__}"
 }
 
 bold()

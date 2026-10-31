@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# If this is PID 1, wrap it with tini for proper signal handling
+[ ${$} -eq 1 ] && exec tini -- "${0}" "${@}"
+
 set -euo pipefail
 . /.functions
 

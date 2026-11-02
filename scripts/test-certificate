@@ -25,6 +25,7 @@ BASE_VARS=(
 	SSL_PRIVATE_KEY_ENCRYPTED
 	SSL_CA_ROOT
 	SSL_CA_CHAIN
+	SSL_CA_TRUSTS
 )
 
 eyes "Validating the files ..."
@@ -43,6 +44,11 @@ done
 if is_file_readable "${SSL_CA_INT:-}" ; then
 	OUT="$(openssl verify -no-CAstore -no-CApath -CAfile "${SSL_CA_ROOT}" "${SSL_CA_INT}" 2>&1)" || fail "The intermediate CA is not signed by the root CA (rc=${?}): ${OUT}"
 fi
+
+# Is the root CA trusted by the system? A self-signed certificate
+# only passes this if that same certificate is in the bundle
+OUT="$(openssl verify -no-CAstore -no-CApath -CAfile "${SSL_CA_TRUSTS}" "${SSL_CA_ROOT}" 2>&1)" || fail "The root CA at [${SSL_CA_ROOT}] isn't trusted by the system's trusts at [${SSL_CA_TRUSTS}] (rc=${?}): ${OUT}"
+
 OUT="$(openssl verify -no-CAstore -no-CApath -CAfile "${SSL_CA_CHAIN}" "${SSL_CERTIFICATE}" 2>&1)" || fail "The certificate isn't signed by the CA Chain at [${SSL_CA_CHAIN}] (rc=${?}): ${OUT}"
 
 #

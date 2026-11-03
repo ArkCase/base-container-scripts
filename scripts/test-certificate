@@ -1,72 +1,154 @@
 #!/bin/bash
+#
+# usage: test-certificate [--key FILE] [--chain FILE] [--root FILE] CERTIFICATE
+#
+# Validates a PEM certificate, and whichever of these are given along with it:
+#
+#	--key FILE	the certificate's unencrypted PEM private key
+#	--chain FILE	PEM CA certificates that the certificate must validate against
+#	--root FILE	the PEM root CA that everything must validate against
+#
+# These are the checks, and each one only runs if its files were given:
+#
+#	1. the certificate is a valid X.509 certificate (always)
+#	2. the certificate and the private key are a pair (--key)
+#	3. the certificate validates against the chain (--chain)
+#	4. the certificate validates against the root CA (--root)
+#	5. every certificate in the chain validates against the root CA (--chain and --root)
+#
+# The certificate file may carry its intermediates after it. These, and the chain
+# (if given), are used to build the certificate's path to the root CA. Only the
+# files given are ever trusted, never the system's trusts.
+#
+# Exits with 0 if every check passed, and 1 otherwise (including incorrect usage).
+#
 
 set -euo pipefail
 . /.functions
 
-set_or_default SSL_DIR "/.ssl"
+usage()
+{
+	[ ${#} -gt 0 ] && err "${@}\n"
+	echo "usage: ${0##*/} [--key FILE] [--chain FILE] [--root FILE] CERTIFICATE" 1>&2
+	exit 1
+}
 
-require_exe openssl sha256sum
+require_exe getopt
 
-require_dir_readable "${SSL_DIR}"
-require_file_readable "${SSL_DIR}/.env"
+# getopt reports what's wrong with the arguments by itself
+ARGS="$(getopt -o "h" -l "help,key:,chain:,root:" -n "${0##*/}" -- "${@}")" || usage
 
-SSL_ENV="${SSL_DIR}/.env"
+KEY_SET="false"
+KEY=""
+CHAIN_SET="false"
+CHAIN=""
+ROOT_SET="false"
+ROOT=""
 
-#
-# Init all the SSL-related stuff
-#
-source "${SSL_ENV}" || fail "Failed to load the SSL environment from [${SSL_ENV}]"
+FILES=()
 
-# Check that all the files are there
-BASE_VARS=(
-	SSL_PASSWORD_FILE
-	SSL_CERTIFICATE
-	SSL_PRIVATE_KEY
-	SSL_PRIVATE_KEY_ENCRYPTED
-	SSL_CA_ROOT
-	SSL_CA_CHAIN
-	SSL_CA_TRUSTS
-)
+eval set -- "${ARGS}"
+while true ; do
+	case "${1}" in
+		--help | -h ) usage ;;
 
-eyes "Validating the files ..."
-for VAR in "${BASE_VARS[@]}" ; do
-	[ -v "${VAR}" ] || fail "The variable [${VAR}] is not defined!"
-	FILE="${!VAR}"
-	[ -n "${FILE}" ] || fail "The value for [${VAR}] is empty!"
-	require_file_readable "${FILE}"
+		-- ) shift ; break ;;
+
+		--key )
+			as_boolean "${KEY_SET}" && usage "May only provide ${1} once"
+			KEY_SET="true"
+			KEY="${2}"
+			require_file_readable "${KEY}"
+			FILES+=( "${KEY}" )
+			shift 2
+			;;
+
+		--chain )
+			as_boolean "${CHAIN_SET}" && usage "May only provide ${1} once"
+			CHAIN_SET="true"
+			CHAIN="${2}"
+			require_file_readable "${CHAIN}"
+			FILES+=( "${CHAIN}" )
+			shift 2
+			;;
+
+		--root )
+			as_boolean "${ROOT_SET}" && usage "May only provide ${1} once"
+			ROOT_SET="true"
+			ROOT="${2}"
+			require_file_readable "${ROOT}"
+			FILES+=( "${ROOT}" )
+			shift 2
+			;;
+	esac
+done
+
+[ ${#} -gt 0 ] || usage "The certificate is required"
+[ ${#} -eq 1 ] || usage "Only one certificate may be given"
+CERT="${1}"
+[[ "${CERT}" == -* ]] && CERT="./${CERT}"
+require_file_readable "${CERT}"
+FILES+=( "${CERT}" )
+
+require_exe openssl
+for FILE in "${FILES[@]}" ; do
 	[ -s "${FILE}" ] || fail "The file [${FILE}] is of length 0"
 done
 
 #
-# Verify certificate signatures!
+# 1. Is it a certificate at all?
 #
-# The intermediate CA is optional
-if is_file_readable "${SSL_CA_INT:-}" ; then
-	OUT="$(openssl verify -no-CAstore -no-CApath -CAfile "${SSL_CA_ROOT}" "${SSL_CA_INT}" 2>&1)" || fail "The intermediate CA is not signed by the root CA (rc=${?}): ${OUT}"
+OUT="$(openssl x509 -noout -in "${CERT}" 2>&1)" || fail "The file [${CERT}] isn't a valid X.509 certificate (rc=${?}): ${OUT}"
+ok "The certificate is a valid X.509 certificate"
+
+#
+# 2. Do the certificate and key go together? The public keys are compared instead
+#    of the moduli, since not all keys are RSA
+#
+if [ -n "${KEY}" ] ; then
+	PUBLIC_FROM_CERT="$(openssl x509 -noout -pubkey -in "${CERT}" 2>&1)" || fail "Failed to get the public key from the certificate [${CERT}] (rc=${?}): ${PUBLIC_FROM_CERT}"
+	PUBLIC_FROM_KEY="$(openssl pkey -pubout -passin "pass:" -in "${KEY}" 2>&1)" || fail "Failed to read the private key [${KEY}], which must be unencrypted (rc=${?}): ${PUBLIC_FROM_KEY}"
+	[ "${PUBLIC_FROM_CERT}" == "${PUBLIC_FROM_KEY}" ] || fail "The private key [${KEY}] doesn't match the certificate [${CERT}]"
+	ok "The certificate and the private key are a pair"
 fi
 
-# Is the root CA trusted by the system? A self-signed certificate
-# only passes this if that same certificate is in the bundle
-OUT="$(openssl verify -no-CAstore -no-CApath -CAfile "${SSL_CA_TRUSTS}" "${SSL_CA_ROOT}" 2>&1)" || fail "The root CA at [${SSL_CA_ROOT}] isn't trusted by the system's trusts at [${SSL_CA_TRUSTS}] (rc=${?}): ${OUT}"
-
-OUT="$(openssl verify -no-CAstore -no-CApath -CAfile "${SSL_CA_CHAIN}" "${SSL_CERTIFICATE}" 2>&1)" || fail "The certificate isn't signed by the CA Chain at [${SSL_CA_CHAIN}] (rc=${?}): ${OUT}"
-
 #
-# Does the private key match the certificate?
+# 3. Does the certificate validate against the chain? The chain needn't go all
+#    the way up to a root CA, so whichever of its certificates is reached first
+#    is good enough
 #
-MOD_CERTIFICATE="$(openssl x509 -noout -modulus -in "${SSL_CERTIFICATE}" 2>&1)" || fail "Failed to get the modulus from the certificate at [${SSL_CERTIFICATE}] (rc=${?}): ${MOD_CERTIFICATE}"
-MOD_PRIVATE="$(openssl rsa -noout -modulus -in "${SSL_PRIVATE_KEY}" 2>&1)" || fail "Failed to get the modulus from the plaintext key at [${SSL_PRIVATE_KEY}] (rc=${?}): ${MOD_PRIVATE}"
-[ "${MOD_PRIVATE}" == "${MOD_CERTIFICATE}" ] || fail "Modulus mismatch between the private key and the certificate: [${MOD_PRIVATE}] != [${MOD_CERTIFICATE}]"
+if [ -n "${CHAIN}" ] ; then
+	OUT="$(openssl verify -no-CAstore -no-CApath -partial_chain -CAfile "${CHAIN}" -untrusted "${CERT}" "${CERT}" 2>&1)" || fail "The certificate [${CERT}] doesn't validate against the chain [${CHAIN}] (rc=${?}): ${OUT}"
+	ok "The certificate validates against the chain"
+fi
 
 #
-# Are the secure key and the plaintext key the same?
+# 4. Does the certificate validate against the root CA?
 #
-DECRYPTED_KEY="$(openssl pkcs8 -in "${SSL_PRIVATE_KEY_ENCRYPTED}" -passin file:"${SSL_PASSWORD_FILE}")" || fail "Failed to decrypt the AES-encrypted (PKCS#8) private key (rc=${?})"
-MOD_ENCRYPTED="$(openssl rsa -noout -modulus <<< "${DECRYPTED_KEY}" 2>&1)" || fail "Failed to get the modulus from the decrypted private key from [${SSL_PRIVATE_KEY_ENCRYPTED}] (rc=${?}): ${MOD_ENCRYPTED}"
-[ "${MOD_ENCRYPTED}" == "${MOD_PRIVATE}" ] || fail "Modulus mismatch between the encrypted private key and the plaintext private key: [${MOD_ENCRYPTED}] != [${MOD_PRIVATE}]"
+if [ -n "${ROOT}" ] ; then
+	UNTRUSTED=( -untrusted "${CHAIN:-${CERT}}" )
+	OUT="$(openssl verify -no-CAstore -no-CApath -CAfile "${ROOT}" "${UNTRUSTED[@]}" "${CERT}" 2>&1)" || fail "The certificate [${CERT}] doesn't validate against the root CA [${ROOT}] (rc=${?}): ${OUT}"
+	ok "The certificate validates against the root CA"
+fi
 
 #
-# Hooray!! VERIFIED!
+# 5. Does everything in the chain validate against the root CA? Each of its
+#    certificates is checked, since openssl only checks a file's first one
 #
+if [ -n "${CHAIN}" ] && [ -n "${ROOT}" ] ; then
+	COUNT=0
+	CANDIDATE=""
+	while IFS="" read -r LINE ; do
+		CANDIDATE+="${LINE}"$'\n'
+		[[ "${LINE}" =~ ^-+END\ CERTIFICATE-+ ]] || continue
+		COUNT=$(( COUNT + 1 ))
+		SUBJECT="$(openssl x509 -noout -subject <<< "${CANDIDATE}" 2>&1)" || fail "Certificate #${COUNT} in the chain [${CHAIN}] isn't valid (rc=${?}): ${SUBJECT}"
+		OUT="$(openssl verify -no-CAstore -no-CApath -CAfile "${ROOT}" -untrusted "${CHAIN}" <(echo -n "${CANDIDATE}") 2>&1)" || fail "Certificate #${COUNT} in the chain [${CHAIN}] (${SUBJECT}) doesn't validate against the root CA [${ROOT}] (rc=${?}): ${OUT}"
+		CANDIDATE=""
+	done < "${CHAIN}"
+	[ ${COUNT} -gt 0 ] || fail "The chain [${CHAIN}] has no certificates"
+	ok "All ${COUNT} certificates in the chain validate against the root CA"
+fi
+
 ok "Certificate verified!"
 exit 0

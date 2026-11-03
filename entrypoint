@@ -4,10 +4,27 @@ set -euo pipefail
 . /.functions
 
 #
+# Configure and verify the entrypoint
+#
+set_or_default ENTRYPOINT "/usr/local/bin/entrypoint"
+require_file_executable "${ENTRYPOINT}"
+
+#
 # Init all the SSL-related stuff
 #
 init_ssl
 
-set_or_default ENTRYPOINT "/usr/local/bin/entrypoint"
-require_file_executable "${ENTRYPOINT}"
-exec /usr/bin/tini -- "${ENTRYPOINT}" "${@}"
+#
+# Construct the entrypoint command
+#
+CMD=( "${ENTRYPOINT}" "${@}" )
+
+#
+# If we're running as PID 1, then wrap it in tini
+#
+[ ${$} == 1 ] && CMD=( "/usr/bin/tini" -- "${CMD[@]}" )
+
+#
+# Become the command!
+#
+exec "${CMD[@]}"

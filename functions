@@ -1552,7 +1552,7 @@ __ssl()
 
 	set_or_default SSL_DIR "/.ssl"
 	declare -xg SSL_DIR
-	"/usr/local/bin/acme-${OP}"
+	"/usr/local/bin/ssl-${OP}"
 }
 
 #

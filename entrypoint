@@ -14,17 +14,21 @@ require_file_executable "${ENTRYPOINT}"
 #
 init_ssl
 
-#
-# Construct the entrypoint command
-#
-CMD=( "${ENTRYPOINT}" "${@}" )
+set_or_default TINI_KILL_PROCESS_GROUP "1"
+export TINI_KILL_PROCESS_GROUP
+
+if [ ${$} != 1 ] ; then
+	set_or_default TINI_SUBREAPER "1"
+	export TINI_SUBREAPER
+fi
 
 #
-# If we're running as PID 1, then wrap it in tini
+# If we have any other special flags configured, apply them
 #
-[ ${$} == 1 ] && CMD=( "/usr/bin/tini" -- "${CMD[@]}" )
+set_or_default TINI_FLAGS
+[ -n "${TINI_FLAGS}" ] && readarray -t TINI_FLAGS < <(to_list "${TINI_FLAGS}")
 
 #
 # Become the command!
 #
-exec "${CMD[@]}"
+exec "/usr/bin/tini" "${TINI_FLAGS[@]}" -- "${ENTRYPOINT}" "${@}"

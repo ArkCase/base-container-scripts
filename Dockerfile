@@ -7,6 +7,7 @@ ARG GOARCH="amd64"
 ARG PKG="base-scripts"
 
 ARG GO="1.26"
+ARG GOFIPS140_VER="v1.26.0"
 ARG BUILDER_IMAGE="golang"
 ARG BUILDER_VER="${GO}-alpine"
 ARG BUILDER_IMG="${BUILDER_IMAGE}:${BUILDER_VER}"
@@ -17,6 +18,7 @@ ARG GOTEMPLATE_SRC="https://github.com/hairyhenderson/gomplate/releases/download
 FROM "${BUILDER_IMG}" AS gucci
 
 ARG GO
+ARG GOFIPS140_VER
 ARG GUCCI_REPO="https://github.com/noqcks/gucci.git"
 ARG GUCCI_VER="1.9.0"
 
@@ -27,22 +29,36 @@ ENV GO111MODULE="on"
 ENV CGO_ENABLED="0"
 RUN mkdir -p "${SRCPATH}" && \
     cd "${SRCPATH}" && \
+    if [ -n "${FIPS}" ] ; then \
+        export GOFIPS140="${GOFIPS140_VER}" ; \
+        echo "🔒 Building a FIPS-hardened ETCD binary (GOFIPS140=${GOFIPS140})" ; \
+    fi ; \
     git clone "${GUCCI_REPO}" "." --branch="v${GUCCI_VER}" && \
     go mod edit -go "${GO}" && \
     go get -u && \
     go mod tidy && \
     go install -v -ldflags "-X main.AppVersion='${GUCCI_VER}' -w -extldflags static" && \
-    cp -vf /go/bin/gucci /gucci
-
-FROM scratch
+    install -m 0755 -o root -g root /go/bin/gucci /gucci
 
 ARG GOTEMPLATE_SRC
 
-COPY --chown=root:root --chmod=0755 functions /.functions
-COPY --chown=root:root --chmod=0755 entrypoint /
-COPY --chown=root:root --chmod=0755 scripts/ /usr/local/bin/
-COPY --chown=root:root --chmod=0755 --from=gucci "/gucci" "/usr/local/bin/gucci"
+FROM "ubuntu:24.04" AS base
+
+ENV TGT="/tgt"
+RUN --mount=type=bind,target=/src \
+    --mount=type=bind,from=gucci,target=/gucci \
+    mkdir -p "${TGT}/usr/local/bin" && \
+    ( tar --owner=root --group=root --mode=u=rwX,go=rX -cf - /src/scripts ) | tar --strip-components=2 -C "${TGT}/usr/local/bin" -xvf - && \
+    install -m 0644 -o root -g root /src/functions "${TGT}/.functions" && \
+    install -m 0755 -o root -g root /src/entrypoint "${TGT}" && \
+    install -m 0755 -o root -g root /gucci/gucci "${TGT}/usr/local/bin"
 
 # Use this instead of Gucci when the time is right. It's better maintained
 # and has many more features
 # ADD --chown=root:root --chmod=0755 "${GOTEMPLATE_SRC}" "/usr/local/bin/gotemplate"
+
+FROM scratch
+
+ARG TGT
+
+COPY --from=base /tgt/ /

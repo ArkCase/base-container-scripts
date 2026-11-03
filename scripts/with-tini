@@ -1,0 +1,23 @@
+#!/bin/bash
+
+set -euo pipefail
+. /.functions
+
+set_or_default TINI_KILL_PROCESS_GROUP "1"
+export TINI_KILL_PROCESS_GROUP
+
+if [ ${$} != 1 ] ; then
+	set_or_default TINI_SUBREAPER "1"
+	export TINI_SUBREAPER
+fi
+
+#
+# If we have any other special flags configured, apply them
+#
+set_or_default TINI_FLAGS
+[ -n "${TINI_FLAGS}" ] && readarray -t TINI_FLAGS < <(to_list "${TINI_FLAGS}")
+
+#
+# Become the command!
+#
+exec "/usr/bin/tini" "${TINI_FLAGS[@]}" -- "${ENTRYPOINT}" "${@}"

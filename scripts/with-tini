@@ -24,7 +24,7 @@ fi
 # If we have any other special flags configured, apply them
 #
 set_or_default TINI_FLAGS
-[ -n "${TINI_FLAGS}" ] && to_array TINI_FLAGS
+to_array TINI_FLAGS
 
 #
 # Become the command!

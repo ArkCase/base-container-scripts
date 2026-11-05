@@ -12,7 +12,10 @@ require_file_executable "${ENTRYPOINT}"
 #
 # Init all the SSL-related stuff
 #
-init_ssl
+# Allow some containers to turn off the SSL initialization in special circumstances
+#
+set_as_boolean SSL_INIT_DEFERRED "false"
+as_boolean "${SSL_INIT_DEFERRED}" || init_ssl || fail "Failed to initialize the SSL layer"
 
 #
 # Make sure we wrap with tini

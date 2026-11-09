@@ -20,6 +20,9 @@ download()
 	local ATTEMPT=0
 	local RC=0
 	local HTTP_CODE=""
+	# The credentials are only sent once the repository asks for them (HTTP 401),
+	# so repositories that don't need them (i.e. Maven Central) never see them
+	local SEND_AUTH=""
 	while true ; do
 		(( ++ATTEMPT ))
 		RC=0
@@ -30,12 +33,18 @@ download()
 			--fail \
 			--disallow-username-in-url \
 			--write-out '%{http_code}' \
-			--config <(echo -n "${AUTH}") \
+			--config <(echo -n "${SEND_AUTH}") \
 			"${DEST[@]}" \
 			"${URL}")" || RC=${?}
 
 		# If there were no errors, return immediately
 		[ ${RC} -eq 0 ] && return 0
+
+		# The repository wants credentials: try again (right away) with them, if we have them
+		if [ ${RC} -eq 22 ] && [ "${HTTP_CODE}" == "401" ] && [ -n "${AUTH}" ] && [ -z "${SEND_AUTH}" ] ; then
+			SEND_AUTH="${AUTH}"
+			continue
+		fi
 
 		# If the error isn't retryable, fail immediately
 		case ${RC} in
@@ -221,7 +230,7 @@ if [ -n "${AUTH}" ] ; then
 	# Only the username's hash is shown: an unsalted hash of the password
 	# would allow it to be guessed offline by anyone who can read the logs
 	USUM="$(echo -n "${AUTH}" | sed -e 's;:.*$;;g' | sha256sum | awk '{ print $1 }')"
-	say "\tAuthentication:"
+	say "\tAuthentication (only sent if the repository requests it):"
 	say "\t🔒 Username: [${USUM}] (sha256 sum)"
 	say "\t🔑 Password: [set]"
 else

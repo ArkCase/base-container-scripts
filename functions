@@ -1584,6 +1584,33 @@ init_ssl()
 }
 
 #
+# usage: load_ssl
+#
+# Load the SSL environment variables saved by an earlier initialization of the
+# SSL layer (init_ssl), without initializing anything. Returns 0 if they were
+# loaded, and non-0 without any messages if there's nothing to load (or it's
+# not readable by this user), so the caller can decide what to do instead:
+#
+#	if load_ssl ; then
+#		... use ${SSL_CERTIFICATE}, ${SSL_PRIVATE_KEY}, etc ...
+#	else
+#		init_ssl || fail "Failed to initialize the SSL layer"
+#	fi
+#
+load_ssl()
+{
+	local __SSL_DIR="${SSL_DIR:-"/.ssl"}"
+	local __ENV_FILE="${SSL_ENV_FILE:-"${__SSL_DIR}/.env"}"
+
+	is_file_readable "${__ENV_FILE}" || return 1
+
+	local RC=0
+	. "${__ENV_FILE}" || RC=${?}
+	[ ${RC} -eq 0 ] || err "Failed to load the SSL environment variables from [${__ENV_FILE}] (rc=${RC})"
+	return ${RC}
+}
+
+#
 # usage: check_ssl
 #
 # Check the status of the SSL layer

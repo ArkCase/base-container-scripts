@@ -1,0 +1,138 @@
+#!/bin/bash
+#
+# usage: copy-tree [-o OWNER] [-g GROUP] [-m MODE] [-M MTIME] [-v] SOURCE... TARGET
+#        copy-tree [-o OWNER] [-g GROUP] [-m MODE] [-M MTIME] [-v] -t TARGET SOURCE...
+#
+# Copies each SOURCE into the directory TARGET, as "tar -cf - SOURCE | tar -C TARGET -xf -"
+# would, except that a failure on either side of the pipe is an error, and so is a missing
+# SOURCE (under /bin/sh, without pipefail, both go unnoticed).
+#
+# A SOURCE may be a file or a directory (copied recursively). A SOURCE ending in "/." copies
+# the directory's contents (dotfiles included) instead of the directory itself. TARGET is
+# created if it's missing. With -t (--target), every argument is a SOURCE, so the
+# sources can come from xargs (e.g. "find ... -print0 | xargs -0 copy-tree -t TARGET").
+#
+#	-o, --owner OWNER	owner of the copied entries (as tar --owner)
+#	-g, --group GROUP	group of the copied entries (as tar --group)
+#	-m, --mode MODE		mode of the copied entries, in chmod's symbolic syntax, e.g.
+#				u=rwX,go=rX (as tar --mode)
+#	-M, --mtime MTIME	modification time of the copied entries: a date, or a file's path
+#				(starting with / or .) whose time to use (as tar --mtime)
+#	-t, --target TARGET	the target directory (instead of the last argument)
+#	-v, --verbose		list the copied entries
+#
+# Without these, the sources' own owners, modes and times are kept (when run as root).
+#
+# Directories that already exist in TARGET (TARGET included) keep their owner, mode and
+# times: only what the copy creates gets the copied attributes, so it never re-owns or
+# re-modes an existing tree (it's safe to copy into / or /usr/local/bin). Existing files
+# are replaced.
+#
+# Self-contained (doesn't need /.functions), so it can also run from a bind mount in build
+# stages that don't derive from base. Exits with 0 on success, and 1 otherwise (including
+# incorrect usage).
+#
+
+set -euo pipefail
+
+fail()
+{
+	echo -e "${0##*/}: ${@}" 1>&2
+	exit 1
+}
+
+usage()
+{
+	[ ${#} -eq 0 ] || echo -e "${0##*/}: ${@}\n" 1>&2
+	echo "usage: ${0##*/} [-o OWNER] [-g GROUP] [-m MODE] [-M MTIME] [-v] SOURCE... TARGET" 1>&2
+	echo "       ${0##*/} [-o OWNER] [-g GROUP] [-m MODE] [-M MTIME] [-v] -t TARGET SOURCE..." 1>&2
+	exit 1
+}
+
+for EXE in getopt tar find sort ; do
+	type -P "${EXE}" &>/dev/null || fail "The executable [${EXE}] is required but was not found"
+done
+
+# getopt reports what's wrong with the arguments by itself
+ARGS="$(getopt -o "hg:m:M:o:t:v" -l "help,group:,mode:,owner:,mtime:,target:,verbose" -n "${0##*/}" -- "${@}")" || usage
+
+CREATE=()
+EXTRACT=( "--no-overwrite-dir" )
+TARGET=""
+
+# Each option may only be given once
+declare -A SEEN=()
+once()
+{
+	local OPTION="${1}"
+	[ -z "${SEEN["${OPTION}"]:-}" ] || usage "May only provide ${OPTION} once"
+	SEEN["${OPTION}"]="true"
+}
+
+eval set -- "${ARGS}"
+while true ; do
+	case "${1}" in
+		--help | -h ) usage ;;
+
+		--owner | -o ) once "--owner" ; CREATE+=( "--owner=${2}" ) ; shift 2 ;;
+
+		--group | -g ) once "--group" ; CREATE+=( "--group=${2}" ) ; shift 2 ;;
+
+		--mode | -m ) once "--mode" ; CREATE+=( "--mode=${2}" ) ; shift 2 ;;
+
+		--mtime | -M ) once "--mtime" ; CREATE+=( "--mtime=${2}" ) ; shift 2 ;;
+
+		--target | -t ) once "--target" ; TARGET="${2}" ; shift 2 ;;
+
+		--verbose | -v ) once "--verbose" ; EXTRACT+=( "--verbose" ) ; shift ;;
+
+		-- ) shift ; break ;;
+
+		* ) usage "Unexpected argument [${1}]" ;;
+	esac
+done
+
+if [ -n "${SEEN["--target"]:-}" ] ; then
+	[ ${#} -ge 1 ] || usage "Must provide at least one SOURCE"
+	SOURCES=( "${@}" )
+else
+	[ ${#} -ge 2 ] || usage "Must provide at least one SOURCE, and the TARGET"
+	SOURCES=( "${@:1:$(( ${#} - 1 ))}" )
+	TARGET="${@: -1}"
+fi
+
+[ -n "${TARGET}" ] || fail "The TARGET may not be the empty string"
+mkdir -p -- "${TARGET}" || fail "Failed to create the target directory [${TARGET}]"
+
+for SOURCE in "${SOURCES[@]}" ; do
+	[ -n "${SOURCE}" ] || fail "A SOURCE may not be the empty string"
+
+	MEMBERS=()
+	if [ "${SOURCE}" == "." ] || [[ "${SOURCE}" == */. ]] ; then
+		# Copy the directory's contents, not the directory itself
+		case "${SOURCE}" in
+			"." ) SOURCE_DIR="." ;;
+			"/." ) SOURCE_DIR="/" ;;
+			* ) SOURCE_DIR="${SOURCE%/.}" ;;
+		esac
+		[ -e "${SOURCE_DIR}" ] || fail "The source directory [${SOURCE_DIR}] does not exist"
+		[ -d "${SOURCE_DIR}" ] || fail "The source [${SOURCE_DIR}] is not a directory"
+		[ -r "${SOURCE_DIR}" ] || fail "The source directory [${SOURCE_DIR}] is not readable"
+		[ -x "${SOURCE_DIR}" ] || fail "The source directory [${SOURCE_DIR}] is not executable"
+		LIST="$(find "${SOURCE_DIR}" -mindepth 1 -maxdepth 1 -printf "%P\n")" || fail "Failed to produce the content list for [${SOURCE_DIR}]"
+		readarray -t MEMBERS < <(printf "%s" "${LIST}" | LC_ALL=C sort)
+	else
+		[ -e "${SOURCE}" ] || [ -L "${SOURCE}" ] || fail "The source [${SOURCE}] does not exist"
+		SOURCE_DIR="$(dirname -- "${SOURCE}")"
+		MEMBERS=( "$(basename -- "${SOURCE}")" )
+	fi
+
+	# An empty directory's contents: nothing to copy
+	[ ${#MEMBERS[@]} -gt 0 ] || continue
+
+	tar -C "${SOURCE_DIR}" "${CREATE[@]}" -cf - -- "${MEMBERS[@]}" | \
+		tar -C "${TARGET}" "${EXTRACT[@]}" -xf - || \
+		fail "Failed to copy the tree from [${SOURCE}] into [${TARGET}]"
+done
+
+exit 0

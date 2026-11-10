@@ -17,6 +17,7 @@ ARG GOTEMPLATE_SRC="https://github.com/hairyhenderson/gomplate/releases/download
 
 FROM "${BUILDER_IMG}" AS gucci
 
+ARG FIPS
 ARG GO
 ARG GOFIPS140_VER
 ARG GUCCI_REPO="https://github.com/noqcks/gucci.git"

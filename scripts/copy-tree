@@ -1,16 +1,18 @@
 #!/bin/bash
 #
-# usage: copy-tree [-o OWNER] [-g GROUP] [-m MODE] [-M MTIME] [-v] SOURCE... TARGET
-#        copy-tree [-o OWNER] [-g GROUP] [-m MODE] [-M MTIME] [-v] -t TARGET SOURCE...
+# usage: copy-tree [-o OWNER] [-g GROUP] [-m MODE] [-M MTIME] [--no-overwrite-dir] [-v] SOURCE... TARGET
+#        copy-tree [-o OWNER] [-g GROUP] [-m MODE] [-M MTIME] [--no-overwrite-dir] [-v] -t TARGET SOURCE...
 #
 # Copies each SOURCE into the directory TARGET, as "tar -cf - SOURCE | tar -C TARGET -xf -"
 # would, except that a failure on either side of the pipe is an error, and so is a missing
 # SOURCE (under /bin/sh, without pipefail, both go unnoticed).
 #
-# A SOURCE may be a file or a directory (copied recursively). A SOURCE ending in "/." copies
-# the directory's contents (dotfiles included) instead of the directory itself. TARGET is
-# created if it's missing. With -t (--target), every argument is a SOURCE, so the
-# sources can come from xargs (e.g. "find ... -print0 | xargs -0 copy-tree -t TARGET").
+# A SOURCE may be a file or a directory, which is copied recursively, itself included. A SOURCE
+# ending in "/" (or "/.") copies the directory's contents instead (dotfiles included), and gives
+# TARGET the directory's own owner, mode and times, as rsync does: "copy-tree dir /tgt" creates
+# /tgt/dir, "copy-tree dir/ /tgt" fills /tgt and makes it look like dir. TARGET is created if
+# it's missing. With -t (--target), every argument is a SOURCE, so the sources can
+# come from xargs (e.g. "find ... -print0 | xargs -0 copy-tree -t TARGET").
 #
 #	-o, --owner OWNER	owner of the copied entries (as tar --owner)
 #	-g, --group GROUP	group of the copied entries (as tar --group)
@@ -18,15 +20,18 @@
 #				u=rwX,go=rX (as tar --mode)
 #	-M, --mtime MTIME	modification time of the copied entries: a date, or a file's path
 #				(starting with / or .) whose time to use (as tar --mtime)
+#	--no-overwrite-dir	leave the metadata of directories that already exist in
+#				TARGET alone (as tar --no-overwrite-dir)
 #	-t, --target TARGET	the target directory (instead of the last argument)
 #	-v, --verbose		list the copied entries
 #
 # Without these, the sources' own owners, modes and times are kept (when run as root).
 #
-# Directories that already exist in TARGET (TARGET included) keep their owner, mode and
-# times: only what the copy creates gets the copied attributes, so it never re-owns or
-# re-modes an existing tree (it's safe to copy into / or /usr/local/bin). Existing files
-# are replaced.
+# As with tar, a directory that already exists in TARGET takes the copied one's owner, mode
+# and times, unless --no-overwrite-dir is given: then existing directories keep theirs, and
+# only what the copy creates gets the copied attributes (so copying into / or /usr/local/bin
+# never re-owns or re-modes them), and TARGET only takes a "dir/" SOURCE's attributes if the
+# copy created it. Existing files are replaced.
 #
 # Self-contained (doesn't need /.functions), so it can also run from a bind mount in build
 # stages that don't derive from base. Exits with 0 on success, and 1 otherwise (including
@@ -44,8 +49,8 @@ fail()
 usage()
 {
 	[ ${#} -eq 0 ] || echo -e "${0##*/}: ${@}\n" 1>&2
-	echo "usage: ${0##*/} [-o OWNER] [-g GROUP] [-m MODE] [-M MTIME] [-v] SOURCE... TARGET" 1>&2
-	echo "       ${0##*/} [-o OWNER] [-g GROUP] [-m MODE] [-M MTIME] [-v] -t TARGET SOURCE..." 1>&2
+	echo "usage: ${0##*/} [-o OWNER] [-g GROUP] [-m MODE] [-M MTIME] [--no-overwrite-dir] [-v] SOURCE... TARGET" 1>&2
+	echo "       ${0##*/} [-o OWNER] [-g GROUP] [-m MODE] [-M MTIME] [--no-overwrite-dir] [-v] -t TARGET SOURCE..." 1>&2
 	exit 1
 }
 
@@ -54,10 +59,11 @@ for EXE in getopt tar find sort ; do
 done
 
 # getopt reports what's wrong with the arguments by itself
-ARGS="$(getopt -o "hg:m:M:o:t:v" -l "help,group:,mode:,owner:,mtime:,target:,verbose" -n "${0##*/}" -- "${@}")" || usage
+ARGS="$(getopt -o "hg:m:M:o:t:v" -l "help,group:,mode:,owner:,mtime:,no-overwrite-dir,target:,verbose" -n "${0##*/}" -- "${@}")" || usage
 
 CREATE=()
-EXTRACT=( "--no-overwrite-dir" )
+EXTRACT=()
+NO_OVERWRITE_DIR=()
 TARGET=""
 
 # Each option may only be given once
@@ -82,6 +88,8 @@ while true ; do
 
 		--mtime | -M ) once "--mtime" ; CREATE+=( "--mtime=${2}" ) ; shift 2 ;;
 
+		--no-overwrite-dir ) once "--no-overwrite-dir" ; NO_OVERWRITE_DIR=( "--no-overwrite-dir" ) ; shift ;;
+
 		--target | -t ) once "--target" ; TARGET="${2}" ; shift 2 ;;
 
 		--verbose | -v ) once "--verbose" ; EXTRACT+=( "--verbose" ) ; shift ;;
@@ -102,24 +110,31 @@ else
 fi
 
 [ -n "${TARGET}" ] || fail "The TARGET may not be the empty string"
+
+# With --no-overwrite-dir, a "dir/" SOURCE's attributes only go to a TARGET this copy creates
+TARGET_ATTRIBUTES=( "${NO_OVERWRITE_DIR[@]}" )
+[ -d "${TARGET}" ] || TARGET_ATTRIBUTES=()
 mkdir -p -- "${TARGET}" || fail "Failed to create the target directory [${TARGET}]"
 
 for SOURCE in "${SOURCES[@]}" ; do
 	[ -n "${SOURCE}" ] || fail "A SOURCE may not be the empty string"
 
 	MEMBERS=()
-	if [ "${SOURCE}" == "." ] || [[ "${SOURCE}" == */. ]] ; then
+	CONTENTS="false"
+	if [ "${SOURCE}" == "." ] || [[ "${SOURCE}" == */ ]] || [[ "${SOURCE}" == */. ]] ; then
 		# Copy the directory's contents, not the directory itself
-		case "${SOURCE}" in
-			"." ) SOURCE_DIR="." ;;
-			"/." ) SOURCE_DIR="/" ;;
-			* ) SOURCE_DIR="${SOURCE%/.}" ;;
-		esac
+		CONTENTS="true"
+		SOURCE_DIR="${SOURCE%/.}"
+		while [[ "${SOURCE_DIR}" == */ ]] && [ "${SOURCE_DIR}" != "/" ] ; do
+			SOURCE_DIR="${SOURCE_DIR%/}"
+		done
+		[ -n "${SOURCE_DIR}" ] || SOURCE_DIR="/"
 		[ -e "${SOURCE_DIR}" ] || fail "The source directory [${SOURCE_DIR}] does not exist"
 		[ -d "${SOURCE_DIR}" ] || fail "The source [${SOURCE_DIR}] is not a directory"
 		[ -r "${SOURCE_DIR}" ] || fail "The source directory [${SOURCE_DIR}] is not readable"
 		[ -x "${SOURCE_DIR}" ] || fail "The source directory [${SOURCE_DIR}] is not executable"
-		LIST="$(find "${SOURCE_DIR}" -mindepth 1 -maxdepth 1 -printf "%P\n")" || fail "Failed to produce the content list for [${SOURCE_DIR}]"
+		# -H: if SOURCE_DIR is a link to a directory, list the directory's contents
+		LIST="$(find -H "${SOURCE_DIR}" -mindepth 1 -maxdepth 1 -printf "%P\n")" || fail "Failed to produce the content list for [${SOURCE_DIR}]"
 		readarray -t MEMBERS < <(printf "%s" "${LIST}" | LC_ALL=C sort)
 	else
 		[ -e "${SOURCE}" ] || [ -L "${SOURCE}" ] || fail "The source [${SOURCE}] does not exist"
@@ -127,12 +142,19 @@ for SOURCE in "${SOURCES[@]}" ; do
 		MEMBERS=( "$(basename -- "${SOURCE}")" )
 	fi
 
-	# An empty directory's contents: nothing to copy
-	[ ${#MEMBERS[@]} -gt 0 ] || continue
+	# An empty directory has no contents to copy (but TARGET still gets its attributes, below)
+	if [ ${#MEMBERS[@]} -gt 0 ] ; then
+		tar -C "${SOURCE_DIR}" "${CREATE[@]}" -cf - -- "${MEMBERS[@]}" | \
+			tar -C "${TARGET}" "${EXTRACT[@]}" "${NO_OVERWRITE_DIR[@]}" -xf - || \
+			fail "Failed to copy the tree from [${SOURCE}] into [${TARGET}]"
+	fi
 
-	tar -C "${SOURCE_DIR}" "${CREATE[@]}" -cf - -- "${MEMBERS[@]}" | \
-		tar -C "${TARGET}" "${EXTRACT[@]}" -xf - || \
-		fail "Failed to copy the tree from [${SOURCE}] into [${TARGET}]"
+	# A "dir/" SOURCE's own owner, mode and times go to TARGET, as rsync does. This goes last, so
+	# the times aren't changed again by the copy
+	"${CONTENTS}" || continue
+	tar -C "${SOURCE_DIR}" "${CREATE[@]}" --no-recursion -cf - -- . | \
+		tar -C "${TARGET}" "${EXTRACT[@]}" "${TARGET_ATTRIBUTES[@]}" -xf - || \
+		fail "Failed to give [${TARGET}] the attributes of [${SOURCE_DIR}]"
 done
 
 exit 0

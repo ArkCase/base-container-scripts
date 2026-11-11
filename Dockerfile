@@ -49,7 +49,7 @@ ENV TGT="/tgt"
 RUN --mount=type=bind,target=/src \
     --mount=type=bind,from=gucci,target=/gucci \
     mkdir -p "${TGT}/usr/local/bin" && \
-    ( tar --owner=root --group=root --mode=u=rwX,go=rX -cf - /src/scripts ) | tar --strip-components=2 -C "${TGT}/usr/local/bin" -xvf - && \
+    /src/scripts/copy-tree -v -o root -g root -m u=rwX,go=rX /src/scripts/ "${TGT}/usr/local/bin" && \
     install -m 0755 -o root -g root /src/functions "${TGT}/.functions" && \
     install -m 0755 -o root -g root /src/entrypoint "${TGT}" && \
     install -m 0755 -o root -g root /gucci/gucci "${TGT}/usr/local/bin"
